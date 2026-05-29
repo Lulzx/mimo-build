@@ -224,7 +224,7 @@ impl Agent {
                         self.emitter.diff(start, old, new);
                     }
                 }
-                self.emitter.tool_done(&summary);
+                self.emitter.tool_meta(&tool_meta(&name, &args, &result));
                 self.messages.push(Message::tool(&call.id, result));
             }
         }
@@ -364,6 +364,41 @@ impl Agent {
         self.plan.clear();
         self.recent_calls.clear();
         self.id = crate::session::new_id();
+    }
+}
+
+/// Result metadata appended to an activity line (e.g. "12 lines", "+3 -1", "5 matches").
+fn tool_meta(name: &str, args: &serde_json::Value, result: &str) -> String {
+    match name {
+        "read_file" => {
+            let n = result.lines().filter(|l| l.contains('→')).count();
+            if n > 0 { format!("{n} lines") } else { String::new() }
+        }
+        "grep" => {
+            if result.starts_with("(no matches") {
+                "no matches".into()
+            } else {
+                let n = result.lines().filter(|l| l.contains(':')).count();
+                format!("{n} matches")
+            }
+        }
+        "list_dir" => {
+            let n = result.lines().filter(|l| !l.trim().is_empty()).count();
+            format!("{n} items")
+        }
+        "search_replace" => {
+            let add = args["new_string"].as_str().map(|s| s.lines().count().max(1)).unwrap_or(0);
+            let rem = args["old_string"].as_str().map(|s| s.lines().count().max(1)).unwrap_or(0);
+            format!("+{add} -{rem}")
+        }
+        "run_terminal_command" => result
+            .strip_prefix("[exit code: ")
+            .and_then(|r| r.split(']').next())
+            .and_then(|c| c.trim().parse::<i32>().ok())
+            .filter(|c| *c != 0)
+            .map(|c| format!("exit {c}"))
+            .unwrap_or_default(),
+        _ => String::new(),
     }
 }
 

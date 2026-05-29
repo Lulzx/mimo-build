@@ -8,7 +8,8 @@ use tokio::sync::{mpsc, oneshot};
 pub enum UiEvent {
     AssistantDelta(String),
     ToolStart(String),
-    ToolDone,
+    /// Result metadata appended to the last activity line (e.g. "12 lines", "+3 -1").
+    ToolMeta(String),
     Todos(Vec<(String, String)>), // (content, status)
     Info(String),
     Error(String),
@@ -60,9 +61,11 @@ impl Emitter {
         }
     }
 
-    pub fn tool_done(&self, _summary: &str) {
+    pub fn tool_meta(&self, meta: &str) {
         if let Emitter::Channel(tx) = self {
-            tx.send(UiEvent::ToolDone).ok();
+            if !meta.is_empty() {
+                tx.send(UiEvent::ToolMeta(meta.to_string())).ok();
+            }
         }
     }
 

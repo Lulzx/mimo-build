@@ -63,7 +63,7 @@ const COMMANDS: &[(&str, &str)] = &[
 
 enum Blk {
     User { text: String, ts: String },
-    Tool { kind: String, summary: String, active: bool },
+    Tool { kind: String, summary: String, active: bool, meta: String },
     Diff { start: usize, old: String, new: String },
     Assistant { text: String, ts: String },
     Todos(Vec<(String, String)>),
@@ -161,9 +161,18 @@ impl App {
                     }
                 }
                 let kind = s.split([' ', ':', '[']).next().unwrap_or("").to_string();
-                self.blocks.push(Blk::Tool { kind, summary: s, active: true });
+                self.blocks.push(Blk::Tool { kind, summary: s, active: true, meta: String::new() });
             }
-            UiEvent::ToolDone => {}
+            UiEvent::ToolMeta(m) => {
+                // Attach result metadata to the most recent tool line and mark it done.
+                for b in self.blocks.iter_mut().rev() {
+                    if let Blk::Tool { active, meta, .. } = b {
+                        *meta = m;
+                        *active = false;
+                        break;
+                    }
+                }
+            }
             UiEvent::Diff { start_line, old, new } => {
                 self.blocks.push(Blk::Diff { start: start_line, old, new });
             }
@@ -247,25 +256,61 @@ impl App {
     }
 }
 
-/// Light shell-command highlighting for `Run` lines: flags orange, paths blue, operators gray.
+/// Shell-command highlighting for `Run` lines (matches grok's scheme): command + bare words
+/// blue, flags orange, redirections red, pipes/operators gray, quoted strings green.
 fn highlight_cmd(cmd: &str) -> Vec<Span<'static>> {
     let mut spans = vec![];
-    for (i, tok) in cmd.split(' ').enumerate() {
+    for (i, tok) in tokenize_cmd(cmd).into_iter().enumerate() {
         if i > 0 {
             spans.push(Span::styled(" ".to_string(), Style::default().bg(BG)));
         }
-        let style = if tok.starts_with('-') {
-            Style::default().fg(ORANGE).bg(BG)
-        } else if matches!(tok, "|" | "||" | "&&" | ";" | ">" | ">>" | "<" | "2>/dev/null") {
-            Style::default().fg(GRAY).bg(BG)
-        } else if tok.contains('/') {
-            Style::default().fg(BLUE).bg(BG)
+        let color = if tok.starts_with('-') {
+            ORANGE
+        } else if matches!(tok.as_str(), "|" | "||" | "&&" | ";") {
+            GRAY
+        } else if tok.contains('>') || tok.contains('<') {
+            RED // redirections like 2>&1, >>, 2>/dev/null
+        } else if tok.starts_with('"') || tok.starts_with('\'') {
+            GREEN // quoted strings
         } else {
-            Style::default().fg(DIM).bg(BG)
+            BLUE // command name, subcommands, paths, bare args
         };
-        spans.push(Span::styled(tok.to_string(), style));
+        spans.push(Span::styled(tok, Style::default().fg(color).bg(BG)));
     }
     spans
+}
+
+/// Split a command on whitespace but keep quoted strings ("…" / '…') as single tokens.
+fn tokenize_cmd(cmd: &str) -> Vec<String> {
+    let mut toks = vec![];
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    for c in cmd.chars() {
+        match quote {
+            Some(q) => {
+                cur.push(c);
+                if c == q {
+                    quote = None;
+                }
+            }
+            None => {
+                if c == '"' || c == '\'' {
+                    quote = Some(c);
+                    cur.push(c);
+                } else if c.is_whitespace() {
+                    if !cur.is_empty() {
+                        toks.push(std::mem::take(&mut cur));
+                    }
+                } else {
+                    cur.push(c);
+                }
+            }
+        }
+    }
+    if !cur.is_empty() {
+        toks.push(cur);
+    }
+    toks
 }
 
 fn diamond_color(kind: &str) -> Color {
@@ -660,7 +705,7 @@ fn transcript_lines(app: &App, w: usize) -> Vec<Line<'static>> {
                 ]));
                 out.push(Line::from(""));
             }
-            Blk::Tool { kind, summary, active } => {
+            Blk::Tool { kind, summary, active, meta } => {
                 let dcol = diamond_color(kind);
                 // `❙` marks the currently-running item (left margin); colored bar for Run/Edit; else blank.
                 let gutter = if *active {
@@ -685,6 +730,9 @@ fn transcript_lines(app: &App, w: usize) -> Vec<Line<'static>> {
                     spans.push(Span::styled(rest, Style::default().fg(BLUE)));
                 } else {
                     spans.push(Span::styled(rest, Style::default().fg(DIM)));
+                }
+                if !meta.is_empty() {
+                    spans.push(Span::styled(format!(" ({meta})"), Style::default().fg(GRAY)));
                 }
                 out.push(Line::from(spans));
             }
