@@ -90,10 +90,10 @@ impl Config {
 
     /// Short mode label for the TUI input-box title (mirrors the real CLI).
     pub fn mode_label(&self) -> String {
-        if self.plan_mode {
-            "plan".into()
-        } else if self.always_approve {
+        if self.always_approve {
             "always-approve".into()
+        } else if self.plan_mode {
+            "plan".into()
         } else {
             "default".into()
         }

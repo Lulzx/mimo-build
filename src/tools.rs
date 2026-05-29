@@ -248,14 +248,14 @@ pub fn is_mutating(name: &str) -> bool {
 
 pub fn summarize(name: &str, args: &Value) -> String {
     match name {
-        "read_file" => format!("Read `{}`", args["target_file"].as_str().unwrap_or("?")),
-        "write" => format!("Write `{}`", args["filePath"].as_str().unwrap_or("?")),
-        "search_replace" => format!("Edit `{}`", args["file_path"].as_str().unwrap_or("?")),
-        "run_terminal_command" => format!("Run: {}", args["command"].as_str().unwrap_or("?")),
-        "grep" => format!("Grep `{}`", args["pattern"].as_str().unwrap_or("?")),
-        "list_dir" => format!("List `{}`", args["target_directory"].as_str().unwrap_or(".")),
-        "web_search" => format!("Web search: {}", args["query"].as_str().unwrap_or("?")),
-        "web_fetch" => format!("Fetch: {}", args["url"].as_str().unwrap_or("?")),
+        "read_file" => format!("Read {}", args["target_file"].as_str().unwrap_or("?")),
+        "write" => format!("Write {}", args["filePath"].as_str().unwrap_or("?")),
+        "search_replace" => format!("Edit {}", args["file_path"].as_str().unwrap_or("?")),
+        "run_terminal_command" => format!("Run {}", args["command"].as_str().unwrap_or("?")),
+        "grep" => format!("Grep {}", args["pattern"].as_str().unwrap_or("?")),
+        "list_dir" => format!("List {}", args["target_directory"].as_str().unwrap_or(".")),
+        "web_search" => format!("Search {}", args["query"].as_str().unwrap_or("?")),
+        "web_fetch" => format!("Fetch {}", args["url"].as_str().unwrap_or("?")),
         "todo_write" => "Update todos".to_string(),
         "exit_plan_mode" => "Submit plan for approval".to_string(),
         "enter_plan_mode" => "Enter plan mode".to_string(),

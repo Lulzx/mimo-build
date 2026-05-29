@@ -180,6 +180,7 @@ impl Agent {
 
                 // Plan-mode gating for mutating tools.
                 let blocked = self.cfg.plan_mode
+                    && !self.cfg.always_approve
                     && !self.plan_approved
                     && tools::is_mutating(&name)
                     && !is_markdown_edit(&name, &args);

@@ -81,6 +81,7 @@ struct App {
     palette_sel: usize,
     quit: bool,
     responding: bool,
+    title: String,
     cwd: String,
     model: String,
     mode: String,
@@ -101,6 +102,7 @@ impl App {
             palette_sel: 0,
             quit: false,
             responding: false,
+            title: "mimo".to_string(),
             cwd,
             model,
             mode,
@@ -180,6 +182,27 @@ impl App {
     }
 }
 
+/// Light shell-command highlighting for `Run` lines: flags orange, paths blue, operators gray.
+fn highlight_cmd(cmd: &str) -> Vec<Span<'static>> {
+    let mut spans = vec![];
+    for (i, tok) in cmd.split(' ').enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" ".to_string(), Style::default().bg(BG)));
+        }
+        let style = if tok.starts_with('-') {
+            Style::default().fg(ORANGE).bg(BG)
+        } else if matches!(tok, "|" | "||" | "&&" | ";" | ">" | ">>" | "<" | "2>/dev/null") {
+            Style::default().fg(GRAY).bg(BG)
+        } else if tok.contains('/') {
+            Style::default().fg(BLUE).bg(BG)
+        } else {
+            Style::default().fg(DIM).bg(BG)
+        };
+        spans.push(Span::styled(tok.to_string(), style));
+    }
+    spans
+}
+
 fn diamond_color(kind: &str) -> Color {
     match kind {
         "Read" => RED,
@@ -249,7 +272,18 @@ async fn event_loop(
     in_tx: &mpsc::UnboundedSender<String>,
     ev_rx: &mut mpsc::UnboundedReceiver<UiEvent>,
 ) -> Result<()> {
+    let mut last_title = String::new();
     loop {
+        // Dynamic window title with state, like the real CLI.
+        let want = if app.busy {
+            format!("{} — {} - mimo", if app.responding { "Responding" } else { "Thinking" }, app.title)
+        } else {
+            format!("{} - mimo", app.title)
+        };
+        if want != last_title {
+            crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle(&want)).ok();
+            last_title = want;
+        }
         terminal.draw(|f| render(f, app))?;
         if event::poll(Duration::from_millis(80))? {
             if let Event::Key(k) = event::read()? {
@@ -318,6 +352,10 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers, in_tx: &mpsc::Un
             }
             if !line.starts_with('/') {
                 app.flush_stream();
+                if app.title == "mimo" {
+                    let t: String = line.chars().take(40).collect();
+                    app.title = t;
+                }
                 app.blocks.push(Blk::User { text: line.clone(), ts: now_label() });
                 app.add_tokens(&line);
             }
@@ -497,23 +535,29 @@ fn transcript_lines(app: &App, w: usize) -> Vec<Line<'static>> {
             }
             Blk::Tool { kind, summary } => {
                 let dcol = diamond_color(kind);
-                // colored gutter bar for active-ish tools (Run/Edit)
+                // colored gutter bar for active-ish tools (Run/Edit), blank otherwise
                 let gutter = if matches!(kind.as_str(), "Run" | "Edit" | "Write") {
                     Span::styled("  │ ".to_string(), Style::default().fg(dcol))
                 } else {
                     Span::styled("    ".to_string(), Style::default().bg(BG))
                 };
-                // split "Verb rest" so the verb is brighter
                 let (verb, rest) = match summary.split_once(' ') {
                     Some((v, r)) => (v.to_string(), r.to_string()),
                     None => (summary.clone(), String::new()),
                 };
-                out.push(Line::from(vec![
+                let mut spans = vec![
                     gutter,
                     Span::styled("◆ ".to_string(), Style::default().fg(dcol)),
-                    Span::styled(format!("{verb} "), Style::default().fg(TXT)),
-                    Span::styled(rest, Style::default().fg(DIM)),
-                ]));
+                    Span::styled(format!("{verb} "), Style::default().fg(WHITE)),
+                ];
+                if kind == "Run" {
+                    spans.extend(highlight_cmd(&rest));
+                } else if rest.contains('/') {
+                    spans.push(Span::styled(rest, Style::default().fg(BLUE)));
+                } else {
+                    spans.push(Span::styled(rest, Style::default().fg(DIM)));
+                }
+                out.push(Line::from(spans));
             }
             Blk::Diff { start, old, new } => {
                 let mut n = *start;
@@ -680,8 +724,10 @@ fn render_input(f: &mut ratatui::Frame, area: Rect, app: &App) {
 fn render_footer(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let pairs: &[(&str, &str)] = if app.input.starts_with('/') {
         &[("Enter", "run"), ("Tab", "complete"), ("↑↓", "select"), ("Ctrl+.", "shortcuts")]
+    } else if app.busy {
+        &[("Shift+Tab", "mode"), ("Ctrl+C", "cancel"), ("Ctrl+Enter", "interject"), ("Ctrl+.", "shortcuts")]
     } else {
-        &[("Enter", "send"), ("Shift+Tab", "mode"), ("Ctrl+C", "quit"), ("PgUp/PgDn", "scroll")]
+        &[("Enter", "send"), ("Shift+Tab", "mode"), ("Ctrl+.", "shortcuts")]
     };
     let mut spans = vec![Span::styled("  ", Style::default().bg(BG))];
     for (i, (k, v)) in pairs.iter().enumerate() {
