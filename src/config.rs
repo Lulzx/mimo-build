@@ -88,6 +88,17 @@ impl Config {
         })
     }
 
+    /// Short mode label for the TUI input-box title (mirrors the real CLI).
+    pub fn mode_label(&self) -> String {
+        if self.plan_mode {
+            "plan".into()
+        } else if self.always_approve {
+            "always-approve".into()
+        } else {
+            "default".into()
+        }
+    }
+
     pub fn print_inspect(&self) {
         println!("Mimo configuration for {}", std::env::current_dir().unwrap_or_default().display());
         println!("  model          : {}", self.model);

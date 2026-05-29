@@ -1,1 +1,30 @@
-target/
+# Rust build output
+/target/
+**/*.rs.bk
+
+# Binaries / executables / large artifacts (never commit these)
+/mimo
+*.exe
+*.dll
+*.dylib
+*.so
+*.a
+*.o
+*.bin
+*.profraw
+
+# Local config, secrets, captures
+*.env
+.env
+secrets.*
+
+# Reverse-engineering artifacts (kept local, never published)
+re/
+**/binary.sha256
+binary.sha256
+
+# OS / editor cruft
+.DS_Store
+*.swp
+.idea/
+.vscode/

@@ -209,6 +209,20 @@ impl Agent {
                     self.emitter.tool_start(&summary);
                 }
                 let result = self.exec_tool(&name, &args).await;
+                // Emit an inline diff for successful edits.
+                if name == "search_replace" && !result.starts_with("error") {
+                    if let (Some(old), Some(new), Some(path)) = (
+                        args["old_string"].as_str(),
+                        args["new_string"].as_str(),
+                        args["file_path"].as_str(),
+                    ) {
+                        let start = std::fs::read_to_string(path)
+                            .ok()
+                            .and_then(|c| c.find(new).map(|b| c[..b].matches('\n').count() + 1))
+                            .unwrap_or(0);
+                        self.emitter.diff(start, old, new);
+                    }
+                }
                 self.emitter.tool_done(&summary);
                 self.messages.push(Message::tool(&call.id, result));
             }

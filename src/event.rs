@@ -16,7 +16,9 @@ pub enum UiEvent {
     Approval { summary: String, plan: Option<String>, reply: oneshot::Sender<bool> },
     /// Ask the user a question with optional preset options; reply is the chosen/typed text.
     Question { question: String, options: Vec<String>, reply: oneshot::Sender<String> },
-    Status { model: String, plan_mode: bool },
+    /// A file edit, for inline diff rendering. start_line is 1-based (0 if unknown).
+    Diff { start_line: usize, old: String, new: String },
+    Status { model: String, mode: String },
     TurnDone,
 }
 
@@ -83,9 +85,16 @@ impl Emitter {
         }
     }
 
-    pub fn status(&self, model: &str, plan_mode: bool) {
+    pub fn status(&self, model: &str, mode: &str) {
         if let Emitter::Channel(tx) = self {
-            tx.send(UiEvent::Status { model: model.to_string(), plan_mode }).ok();
+            tx.send(UiEvent::Status { model: model.to_string(), mode: mode.to_string() }).ok();
+        }
+    }
+
+    /// Emit a file edit for inline diff rendering (TUI only).
+    pub fn diff(&self, start_line: usize, old: &str, new: &str) {
+        if let Emitter::Channel(tx) = self {
+            tx.send(UiEvent::Diff { start_line, old: old.to_string(), new: new.to_string() }).ok();
         }
     }
 

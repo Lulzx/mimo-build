@@ -1,152 +1,90 @@
-# mimo-rs
+# mimo
 
-A reverse-engineered, **compile-it-yourself** reimplementation of the xAI **Mimo Build CLI**
-(`mimo` v0.2.11). It reproduces the externally observable experience of the official tool:
-the same `~/.mimo` layout, the same auth precedence, an OpenAI-compatible **streaming agent loop**
-against the same backend, the core built-in tool set, plan mode + approval gating, and an
-interactive TUI.
+**mimo** is an open-source, terminal-native AI coding agent written in Rust. It talks to any
+OpenAI-compatible chat backend, drives a full agentic loop (multi-step tool calling with live
+streaming), and ships a polished full-screen TUI — plan mode, subagents, MCP, cross-session memory,
+goals, schedulers, an OS sandbox, best-of-N with git worktrees, and an ACP server for editor
+integration.
 
-This was built by black-box analysis of the official binary — see [`../re/FINDINGS.md`](../re/FINDINGS.md)
-for the full reverse-engineering writeup (stack, endpoints, prompts, tools, agent architecture).
+It is an independent reimplementation written from a black-box study of how a terminal coding agent
+behaves; it contains no proprietary code or prompts.
 
-## Build
-
-```bash
-cargo build --release
-# binary at target/release/mimo
-```
-
-## Auth
-
-Same precedence as the real CLI:
-
-1. `MIMO_DEPLOYMENT_KEY` (enterprise) → `cli-chat-proxy.mimo.com/v1`
-2. `XAI_API_KEY` (public xAI API) → `api.x.ai/v1`
-3. OIDC token in `~/.mimo/auth.json` (written by the official `mimo login`) → `cli-chat-proxy.mimo.com/v1`
+## Install
 
 ```bash
-export XAI_API_KEY="xai-..."        # or reuse an existing `mimo login` session
-./target/release/mimo
+curl -fsSL https://raw.githubusercontent.com/Lulzx/mimo-build/main/install.sh | bash
 ```
 
-## Custom provider (any OpenAI-compatible backend)
+This builds from source (needs a Rust toolchain) and installs `mimo` onto your `PATH`.
+Or build manually:
 
-To point the clone at a non-xAI backend, set a `[provider]` block in `~/.mimo/mimo-rs.toml`
-(takes precedence over xAI auth):
+```bash
+git clone https://github.com/Lulzx/mimo-build && cd mimo-build
+cargo build --release          # binary at target/release/mimo
+```
+
+## Configure a backend
+
+mimo speaks the OpenAI Chat Completions protocol. Point it at any provider via
+`~/.mimo/mimo-rs.toml`:
 
 ```toml
 [provider]
-base_url = "https://token-plan-sgp.xiaomimimo.com/v1"
-api_key  = "tp-..."
-model    = "mimo-v2.5-pro"
+base_url = "https://api.openai.com/v1"   # or api.x.ai/v1, a local server, etc.
+api_key  = "sk-..."
+model    = "gpt-4o"
 ```
 
-Or via env: `MIMO_BASE_URL`, `MIMO_API_KEY`, `MIMO_MODEL`. Verify with `mimo inspect` / `mimo models`.
+…or with env vars: `MIMO_BASE_URL`, `MIMO_API_KEY`, `MIMO_MODEL`. Check what got resolved with
+`mimo inspect`, and list models with `mimo models`.
 
 ## Usage
 
 ```bash
-mimo                                 # interactive TUI
-mimo -p "fix the failing test"       # single-turn headless (streams to stdout)
-mimo -m mimo-4 -p "..."              # pick a model
-mimo --no-plan --always-approve -p   # skip plan mode, auto-approve tools
-mimo inspect                         # show resolved config + auth source
-mimo models                          # list models from the backend
+mimo                                  # interactive full-screen TUI
+mimo -p "fix the failing test"        # one-shot headless (streams to stdout)
+mimo -m gpt-4o -p "..."               # pick a model
+mimo --best-of-n 3 -p "..."           # 3 candidates in git worktrees, judged, best applied
+mimo --persona codex                  # alternate prompt personality
+mimo --sandbox read-only -p "..."     # confine shell commands (macOS)
+mimo acp                              # Agent Client Protocol server over stdio (editors)
 ```
 
-Interactive slash commands: `/help /model /plan /approve /yolo /clear /inspect /quit`.
+Slash commands in the TUI: `/help /model /plan /approve /yolo /goal /flush /dream /clear /inspect /quit`
+(type `/` for the command palette).
 
-## Fidelity note
+## What's inside
 
-The system prompt in `assets/system_prompt.txt` is the **verbatim 12.5 KB prompt captured off the
-wire** from the real `mimo` 0.2.11 (model identity: *"Mimo 4.3, xAI, April 2026"*), and the tool
-names/params match the real ones (`run_terminal_command`, `search_replace`, `write`, `todo_write`,
-`spawn_subagent`, …). The real CLI uses the **Responses API** (`POST /v1/responses`); this clone
-speaks Chat Completions, which the proxy and `api.x.ai` both accept. See
-[`../re/capture/CAPTURE.md`](../re/capture/CAPTURE.md) for the full wire-protocol capture.
-
-## Terminal UI
-
-The default UX is a **ratatui + crossterm full-screen TUI** (the same stack the real CLI uses):
-scrollable transcript viewport, bottom input box, live token streaming, styled tool-activity
-blocks, a todo panel, an approval modal (`[y]/[n]`), a spinner, and a status line. The agent runs
-in its own task and talks to the render loop over channels (`src/event.rs`). Use `--no-alt-screen`
-for the inline line-REPL instead.
-
-## What's implemented
-
-- **CLI surface** mirroring the real flags (`--agent --always-approve -c/--continue --cwd
-  --disable-web-search --disallowed-tools --effort -m --max-turns --no-plan --no-subagents
-  --output-format -p -r/--resume --rules --system-prompt-override --tools
-  --cli-chat-proxy-base-url`) and subcommands (`models inspect login logout version`).
-- **Streaming agent loop** (`src/agent.rs`) — SSE chat completions with tool calling, multi-turn
-  until the model stops, `max_turns` cap, identical-call **doom-loop guard**.
-- **Tools** (`src/tools.rs`) — real names/params: `read_file`, `write`, `search_replace`,
-  `run_terminal_command` (incl. `background`), `grep`, `list_dir`, `web_fetch`, `web_search` (stub),
-  `todo_write`, `enter_plan_mode`/`exit_plan_mode`, `ask_user_question`, `spawn_subagent`, plus
-  background-task management (`get_command_or_subagent_output`, `wait_commands_or_subagents`,
-  `kill_command_or_subagent`).
-- **Background tasks** (`src/bgtask.rs`) — `run_terminal_command(background:true)` spawns a tracked
-  task; output is streamed into a buffer and retrieved/waited/killed by id.
-- **Project instructions** — `AGENTS.md`/`AGENT.md`/`CLAUDE.md` from cwd up to the repo root are
-  injected into context (the prompt's `<project_instructions_spec>` tells the model to obey them).
-- **ask_user_question** — clarifying questions with options; stdout prompt or a TUI selection modal.
-- **Subagents** (`src/subagent.rs`) — the `task` tool spawns child agents with their own context
-  window and role-specific prompts. Built-in `explore` / `plan` / `general-purpose` (read-only ones
-  have edit tools stripped), plus any agent definitions in `~/.mimo/bundled/agents` and
-  `./.mimo/agents` (markdown frontmatter, with `${{ tools.by_kind.* }}` templates resolved).
-- **MCP client** (`src/mcp.rs`) — JSON-RPC 2.0 stdio servers from `.mimo/mcp.json` / `~/.mimo/mcp.json`;
-  initialize handshake, `tools/list`, namespaced `<server>__<tool>` tools, `tools/call`.
-- **Plan mode + approval gating** — mutating tools blocked until the plan is approved (the model
-  calls `exit_plan_mode`, which prompts you y/N); markdown edits allowed in plan mode; per-call
-  approval unless `--always-approve`/`/yolo`.
-- **OAuth2 login** (`src/auth.rs`) — OIDC Device Authorization Grant (RFC 8628) against
-  `MIMO_OIDC_ISSUER`/`MIMO_OIDC_CLIENT_ID`, writing `~/.mimo/auth.json` in the real format.
-- **Session persistence** (`src/session.rs`) — transcripts under `~/.mimo/sessions/`, with
-  `-c/--continue` (latest for cwd) and `-r/--resume [id]`.
-- **System prompt** (`src/prompt.rs`) reconstructed from the original's templated fragments.
-- **Config/auth** (`src/config.rs`) reading `~/.mimo/config.toml` and `~/.mimo/auth.json`.
-
-## Advanced features
-
-- **Best-of-N** (`src/bestofn.rs`) — `mimo --best-of-n <N> -p "…"` spawns N candidates in isolated
-  **git worktrees**, runs an LLM judge (correctness → quality → safety), and applies the winner.
-- **Cross-session memory** (`src/memory.rs`) — `memory_search`/`memory_get` tools, `/flush` to distil
-  a session into `~/.mimo/memory/`, `/dream` to consolidate; the index is recalled at session start.
-- **Goal state machine** (`src/goal.rs`) — `update_goal` tool + `/goal`; Active/Blocked/Paused/Complete,
-  3-blocks-before-pause, and an **LLM completion classifier** that must confirm `completed:true`.
-- **Schedulers + monitor** (`src/scheduler.rs`) — `scheduler_create/delete/list` (persisted; no live
-  daemon) and `monitor` (bounded live stdout streaming).
-- **Toolset personalities** (`src/personalities.rs`) — `--persona codex|cursor|opencode` swaps the
-  system prompt to emulate other harnesses' styles.
-- **ACP server** (`src/acp.rs`) — `mimo acp` speaks Agent Client Protocol JSON-RPC over stdio
-  (initialize / session.new / session.prompt with streaming `agent_message_chunk`) for editor integration.
-- **OS sandbox** (`src/sandbox.rs`) — `--sandbox read-only|workspace-write` confines shell commands via
-  macOS `sandbox-exec` (real kernel-level enforcement; no-op with a warning off-macOS).
-- **Image/video** (`src/image.rs`) — `image_gen`/`image_edit`/`video_gen` against an OpenAI-style
-  images endpoint, degrading gracefully when the backend doesn't support it.
-
-## Still out of scope (vs. the 106 MB original)
-
-Telemetry/OTEL (**deliberately omitted** — a clone shouldn't phone home), auto-update, the full plugin
-marketplace, notebook tools, and a native `/v1/responses` client (we speak Chat Completions, which the
-proxy, `api.x.ai`, and MiMo all accept). [`../re/FINDINGS.md`](../re/FINDINGS.md) specifies each.
+- **Streaming agent loop** with multi-turn tool calling, a doom-loop guard, and `--max-turns`.
+- **Tools**: `read_file`, `write`, `search_replace`, `run_terminal_command` (incl. background),
+  `grep`, `list_dir`, `web_fetch`, `todo_write`, `enter/exit_plan_mode`, `ask_user_question`,
+  `spawn_subagent`, background-task management, `update_goal`, schedulers, image/video.
+- **Plan mode + approval gating**; per-tool approval unless `--always-approve`.
+- **Subagents** with their own context windows (`explore`/`plan`/`general-purpose`, or your own
+  `.mimo/agents/*.md`).
+- **MCP** stdio client (`.mimo/mcp.json`), exposing server tools as `server__tool`.
+- **Cross-session memory** (`/flush`, `/dream`), a **goal** state machine with an LLM completion
+  classifier, **schedulers**, and an **OS sandbox** (`sandbox-exec` on macOS).
+- **Best-of-N** with git-worktree isolation and an LLM judge.
+- **ACP server** for editor integration.
+- A **ratatui** TUI: rounded input box, `◆` activity bullets, inline diffs, todo panel, approval
+  modals, slash-command palette, and the *groknight*-style neutral-gray theme.
 
 ## Layout
 
 ```
-src/main.rs       CLI parsing + dispatch
-src/config.rs     ~/.mimo config + auth resolution
-src/api.rs        OpenAI-compatible streaming client
-src/agent.rs      agent loop, dispatch, approval/plan gating, doom-loop guard
-src/tools.rs      built-in tool schemas + local execution + tool assembly/filtering
-src/subagent.rs   agent definitions + the `task` subagent executor
-src/mcp.rs        MCP stdio JSON-RPC client
-src/session.rs    session persistence + continue/resume
-src/auth.rs       OAuth2 OIDC device-code login
-src/prompt.rs     system prompt (verbatim, embedded from assets/)
-src/event.rs      output abstraction (Emitter) + UI events
-src/ui.rs         ratatui + crossterm full-screen TUI (default)
-src/tui.rs        inline line-REPL (--no-alt-screen)
-assets/system_prompt.txt   the captured verbatim system prompt
+src/main.rs       CLI parsing + dispatch          src/ui.rs        full-screen ratatui TUI
+src/agent.rs      agent loop + tool dispatch       src/tui.rs       inline line REPL (--no-alt-screen)
+src/api.rs        OpenAI-compatible client         src/event.rs     output/event abstraction
+src/tools.rs      tool schemas + execution         src/subagent.rs  subagents + agent defs
+src/config.rs     ~/.mimo config + auth            src/mcp.rs       MCP stdio client
+src/session.rs    session persistence              src/memory.rs    cross-session memory
+src/goal.rs       goal state machine               src/scheduler.rs schedulers + monitor
+src/bestofn.rs    best-of-N worktrees              src/image.rs     image/video tools
+src/sandbox.rs    OS sandbox profiles              src/acp.rs       ACP stdio server
+src/personalities.rs  prompt personalities         src/auth.rs      OAuth2 device login
 ```
+
+## License
+
+MIT. Independent project; not affiliated with or endorsed by any AI provider.
