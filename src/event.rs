@@ -7,6 +7,8 @@ use tokio::sync::{mpsc, oneshot};
 /// Events the agent emits as a turn progresses.
 pub enum UiEvent {
     AssistantDelta(String),
+    /// A reasoning step: duration + the reasoning text (shown as "Thought for Xs", expandable).
+    Thought { secs: f64, text: String },
     ToolStart(String),
     /// Result metadata appended to the last activity line (e.g. "12 lines", "+3 -1").
     ToolMeta(String),
@@ -58,6 +60,12 @@ impl Emitter {
             Emitter::Channel(tx) => {
                 tx.send(UiEvent::ToolStart(summary.to_string())).ok();
             }
+        }
+    }
+
+    pub fn thought(&self, secs: f64, text: &str) {
+        if let Emitter::Channel(tx) = self {
+            tx.send(UiEvent::Thought { secs, text: text.to_string() }).ok();
         }
     }
 

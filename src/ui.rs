@@ -64,6 +64,7 @@ const COMMANDS: &[(&str, &str)] = &[
 enum Blk {
     User { text: String, ts: String },
     Tool { kind: String, summary: String, active: bool, meta: String },
+    Thought { secs: f64, text: String, expanded: bool },
     Diff { start: usize, old: String, new: String },
     Assistant { text: String, ts: String },
     Todos(Vec<(String, String)>),
@@ -91,6 +92,7 @@ struct App {
     responding: bool,
     show_shortcuts: bool,
     file_sel: usize,
+    nav: Option<usize>, // activity-navigation selection (ordinal among selectable blocks)
     title: String,
     todos_total: usize,
     todos_done: usize,
@@ -120,6 +122,7 @@ impl App {
             responding: false,
             show_shortcuts: false,
             file_sel: 0,
+            nav: None,
             title: "mimo".to_string(),
             todos_total: 0,
             todos_done: 0,
@@ -146,9 +149,16 @@ impl App {
         match ev {
             UiEvent::AssistantDelta(d) => {
                 self.add_tokens(&d);
+                if !self.responding {
+                    self.last_event = Instant::now(); // reset the op-timer at streaming start, not every token
+                }
                 self.responding = true;
-                self.last_event = Instant::now();
                 self.streaming.get_or_insert_with(String::new).push_str(&d);
+            }
+            UiEvent::Thought { secs, text } => {
+                self.flush_stream();
+                self.last_event = Instant::now();
+                self.blocks.push(Blk::Thought { secs, text, expanded: false });
             }
             UiEvent::ToolStart(s) => {
                 self.flush_stream();
@@ -218,6 +228,21 @@ impl App {
         }
         let q = self.input.trim();
         COMMANDS.iter().filter(|(n, _)| n.starts_with(q)).cloned().collect()
+    }
+
+    /// Block indices that can be navigation-selected (tool + thought activity lines).
+    fn selectable(&self) -> Vec<usize> {
+        self.blocks
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| matches!(b, Blk::Tool { .. } | Blk::Thought { .. }))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// The currently nav-selected block index, if any.
+    fn selected_block(&self) -> Option<usize> {
+        self.nav.and_then(|n| self.selectable().get(n).copied())
     }
 
     /// The partial path after a trailing `@token` in the input, if any.
@@ -440,9 +465,12 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers, in_tx: &mpsc::Un
             app.streaming = None;
             app.todos_total = 0;
             app.used_tokens = BASE_CONTEXT_TOKENS;
+            app.nav = None;
             in_tx.send("/clear".to_string()).ok();
         }
+        KeyCode::Char('e') | KeyCode::Char('E') if mods.contains(KeyModifiers::CONTROL) => toggle_expand(app),
         KeyCode::Char(c) => {
+            app.nav = None; // typing exits navigation
             app.input.push(c);
             app.palette_sel = 0;
             app.file_sel = 0;
@@ -469,6 +497,26 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers, in_tx: &mpsc::Un
             let n = app.file_matches().len();
             app.file_sel = (app.file_sel + 1).min(n.saturating_sub(1));
         }
+        // Activity navigation: Up enters/moves selection (when input is empty), Down moves
+        // or exits, Left/Esc exits, Enter expands a selected Thought.
+        KeyCode::Up if app.input.is_empty() => {
+            let sel = app.selectable();
+            if !sel.is_empty() {
+                app.nav = Some(match app.nav {
+                    Some(n) => n.saturating_sub(1),
+                    None => sel.len() - 1,
+                });
+            }
+        }
+        KeyCode::Down if app.nav.is_some() => {
+            let len = app.selectable().len();
+            match app.nav {
+                Some(n) if n + 1 < len => app.nav = Some(n + 1),
+                _ => app.nav = None,
+            }
+        }
+        KeyCode::Left | KeyCode::Esc if app.nav.is_some() => app.nav = None,
+        KeyCode::Enter if app.nav.is_some() => toggle_expand(app),
         KeyCode::Enter => {
             if has_files {
                 complete_file(app);
@@ -564,6 +612,15 @@ fn finish_question(app: &mut App, answer: String) {
 
 fn now_label() -> String {
     chrono::Local::now().format("%-I:%M %p").to_string()
+}
+
+/// Expand/collapse the nav-selected Thought block.
+fn toggle_expand(app: &mut App) {
+    if let Some(i) = app.selected_block() {
+        if let Some(Blk::Thought { expanded, .. }) = app.blocks.get_mut(i) {
+            *expanded = !*expanded;
+        }
+    }
 }
 
 /// Replace the trailing `@token` with the selected workspace file path.
@@ -690,7 +747,9 @@ fn transcript_lines(app: &App, w: usize) -> Vec<Line<'static>> {
     };
 
 
-    for blk in &app.blocks {
+    let sel_idx = app.selected_block();
+    for (bi, blk) in app.blocks.iter().enumerate() {
+        let selected = sel_idx == Some(bi);
         match blk {
             Blk::User { text, ts } => {
                 // Shaded full-width row: "❯ text" + right timestamp.
@@ -707,22 +766,26 @@ fn transcript_lines(app: &App, w: usize) -> Vec<Line<'static>> {
             }
             Blk::Tool { kind, summary, active, meta } => {
                 let dcol = diamond_color(kind);
-                // `❙` marks the currently-running item (left margin); colored bar for Run/Edit; else blank.
-                let gutter = if *active {
-                    Span::styled("  ❙ ".to_string(), Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
-                } else if matches!(kind.as_str(), "Run" | "Edit" | "Write") {
-                    Span::styled("  │ ".to_string(), Style::default().fg(dcol))
+                // Left gutter bar colored per tool ("side design"); brighter when running/selected.
+                let gutter = if *active || selected {
+                    Span::styled("  ┃ ".to_string(), Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
                 } else {
-                    Span::styled("    ".to_string(), Style::default().bg(BG))
+                    Span::styled("  │ ".to_string(), Style::default().fg(dcol))
                 };
                 let (verb, rest) = match summary.split_once(' ') {
                     Some((v, r)) => (v.to_string(), r.to_string()),
                     None => (summary.clone(), String::new()),
                 };
+                let bullet = if selected { "› " } else { "◆ " };
+                let verb_style = if selected {
+                    Style::default().fg(WHITE).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(WHITE)
+                };
                 let mut spans = vec![
                     gutter,
-                    Span::styled("◆ ".to_string(), Style::default().fg(dcol)),
-                    Span::styled(format!("{verb} "), Style::default().fg(WHITE)),
+                    Span::styled(bullet.to_string(), Style::default().fg(dcol).add_modifier(if selected { Modifier::BOLD } else { Modifier::empty() })),
+                    Span::styled(format!("{verb} "), verb_style),
                 ];
                 if kind == "Run" {
                     spans.extend(highlight_cmd(&rest));
@@ -735,6 +798,35 @@ fn transcript_lines(app: &App, w: usize) -> Vec<Line<'static>> {
                     spans.push(Span::styled(format!(" ({meta})"), Style::default().fg(GRAY)));
                 }
                 out.push(Line::from(spans));
+            }
+            Blk::Thought { secs, text, expanded } => {
+                let bullet = if selected { "› " } else { "◆ " };
+                let gutter = if selected || *expanded {
+                    Span::styled("  │ ".to_string(), Style::default().fg(GRAY))
+                } else {
+                    Span::styled("    ".to_string(), Style::default().bg(BG))
+                };
+                let tstyle = if selected {
+                    Style::default().fg(WHITE).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(GRAY)
+                };
+                out.push(Line::from(vec![
+                    gutter,
+                    Span::styled(bullet.to_string(), Style::default().fg(DIM)),
+                    Span::styled("Thought ".to_string(), tstyle),
+                    Span::styled(format!("for {secs:.1}s"), Style::default().fg(DIM)),
+                ]));
+                if *expanded && !text.is_empty() {
+                    out.push(Line::from(""));
+                    for raw in wrap(text, w.saturating_sub(2)) {
+                        out.push(Line::from(vec![
+                            Span::styled("  │ ".to_string(), Style::default().fg(GRAY)),
+                            Span::styled(raw, Style::default().fg(DIM)),
+                        ]));
+                    }
+                    out.push(Line::from(""));
+                }
             }
             Blk::Diff { start, old, new } => {
                 let mut n = *start;
@@ -1102,7 +1194,9 @@ fn render_footer(f: &mut ratatui::Frame, area: Rect, app: &App) {
         );
         return;
     }
-    let pairs: &[(&str, &str)] = if app.input.starts_with('/') {
+    let pairs: &[(&str, &str)] = if app.nav.is_some() {
+        &[("←", "collapse"), ("Enter", "open"), ("Ctrl+Shift+e", "expand thinking"), ("Ctrl+.", "shortcuts")]
+    } else if app.input.starts_with('/') {
         &[("Enter", "run"), ("Tab", "complete"), ("↑↓", "select"), ("Ctrl+.", "shortcuts")]
     } else if app.busy {
         &[("Shift+Tab", "mode"), ("Ctrl+C", "cancel"), ("Ctrl+Enter", "interject"), ("Ctrl+.", "shortcuts")]

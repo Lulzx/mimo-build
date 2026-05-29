@@ -121,6 +121,9 @@ pub async fn stream_chat(
     // tool_calls accumulate by index across deltas.
     let mut tc_acc: Vec<(String, String, String)> = Vec::new(); // (id, name, args)
     let mut printed_any = false;
+    // Reasoning (MiMo/DeepSeek stream `reasoning_content`) → timed "Thought for Xs" blocks.
+    let mut reason_start: Option<std::time::Instant> = None;
+    let mut reason_text = String::new();
     let mut stream = resp.bytes_stream();
     let mut buf = String::new();
 
@@ -142,6 +145,23 @@ pub async fn stream_chat(
                 assistant.finish_reason = Some(reason.to_string());
             }
             let delta = &choice["delta"];
+            if let Some(rc) = delta["reasoning_content"].as_str() {
+                if !rc.is_empty() {
+                    if reason_start.is_none() {
+                        reason_start = Some(std::time::Instant::now());
+                    }
+                    reason_text.push_str(rc);
+                }
+            }
+            // Reasoning ends when the model starts real output (content or a tool call).
+            let starting_output = delta["content"].as_str().map(|s| !s.is_empty()).unwrap_or(false)
+                || delta["tool_calls"].is_array();
+            if starting_output {
+                if let Some(rs) = reason_start.take() {
+                    emitter.thought(rs.elapsed().as_secs_f64(), &reason_text);
+                    reason_text.clear();
+                }
+            }
             if let Some(text) = delta["content"].as_str() {
                 if !text.is_empty() {
                     emitter.assistant_delta(text);
@@ -171,6 +191,9 @@ pub async fn stream_chat(
                 }
             }
         }
+    }
+    if let Some(rs) = reason_start.take() {
+        emitter.thought(rs.elapsed().as_secs_f64(), &reason_text);
     }
     emitter.assistant_end(printed_any);
 
