@@ -37,6 +37,13 @@ const CYAN: Color = Color::Rgb(137, 221, 255);
 const ORANGE: Color = Color::Rgb(224, 175, 104);
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const SPINNER_MS: u128 = 80; // braille frame duration
+
+/// Time-based spinner frame so animation speed is constant regardless of redraw cadence.
+fn spinner_frame(app: &App) -> usize {
+    let ms = app.turn_start.map(|t| t.elapsed().as_millis()).unwrap_or(0);
+    ((ms / SPINNER_MS) % SPINNER.len() as u128) as usize
+}
 
 /// Slash-command palette entries (name, description).
 const COMMANDS: &[(&str, &str)] = &[
@@ -74,7 +81,6 @@ struct App {
     input: String,
     streaming: Option<String>,
     busy: bool,
-    spinner: usize,
     turn_start: Option<Instant>,
     last_event: Instant,
     used_tokens: usize,
@@ -104,7 +110,6 @@ impl App {
             input: String::new(),
             streaming: None,
             busy: false,
-            spinner: 0,
             turn_start: None,
             last_event: Instant::now(),
             used_tokens: BASE_CONTEXT_TOKENS,
@@ -345,7 +350,10 @@ async fn event_loop(
             last_title = want;
         }
         terminal.draw(|f| render(f, app))?;
-        if event::poll(Duration::from_millis(80))? {
+        // ~30fps while busy (smooth spinner + streaming); idle polls slowly to save CPU
+        // but still wakes instantly on input. Drain all queued events before the next draw.
+        let timeout = if app.busy { Duration::from_millis(33) } else { Duration::from_millis(150) };
+        if event::poll(timeout)? {
             if let Event::Key(k) = event::read()? {
                 if k.kind == KeyEventKind::Press {
                     if app.modal.is_some() {
@@ -358,9 +366,6 @@ async fn event_loop(
         }
         while let Ok(ev) = ev_rx.try_recv() {
             app.apply(ev);
-        }
-        if app.busy {
-            app.spinner = (app.spinner + 1) % SPINNER.len();
         }
         if app.quit {
             break;
@@ -977,7 +982,7 @@ fn render_working(f: &mut ratatui::Frame, area: Rect, app: &App) {
     } else {
         "Waiting…"
     };
-    let left = format!("  {} {phase} {:.1}s", SPINNER[app.spinner], local);
+    let left = format!("  {} {phase} {:.1}s", SPINNER[spinner_frame(app)], local);
     let right = format!("{:.0}s ⇣{:.1}k [✗] ", turn, app.used_tokens as f64 / 1000.0);
     let w = area.width as usize;
     let pad = w.saturating_sub(left.chars().count() + right.chars().count());
