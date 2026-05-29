@@ -83,6 +83,8 @@ struct App {
     palette_sel: usize,
     quit: bool,
     responding: bool,
+    show_shortcuts: bool,
+    file_sel: usize,
     title: String,
     todos_total: usize,
     todos_done: usize,
@@ -111,6 +113,8 @@ impl App {
             palette_sel: 0,
             quit: false,
             responding: false,
+            show_shortcuts: false,
+            file_sel: 0,
             title: "mimo".to_string(),
             todos_total: 0,
             todos_done: 0,
@@ -200,6 +204,41 @@ impl App {
         }
         let q = self.input.trim();
         COMMANDS.iter().filter(|(n, _)| n.starts_with(q)).cloned().collect()
+    }
+
+    /// The partial path after a trailing `@token` in the input, if any.
+    fn file_token(&self) -> Option<String> {
+        let at = self.input.rfind('@')?;
+        let partial = &self.input[at + 1..];
+        if partial.contains(char::is_whitespace) {
+            return None;
+        }
+        Some(partial.to_string())
+    }
+
+    /// Workspace files matching the current `@token` (for the attach dropdown).
+    fn file_matches(&self) -> Vec<String> {
+        let Some(p) = self.file_token() else { return vec![] };
+        let pl = p.to_lowercase();
+        let mut out = vec![];
+        for e in walkdir::WalkDir::new(".").max_depth(5).into_iter().filter_map(|e| e.ok()) {
+            if !e.file_type().is_file() {
+                continue;
+            }
+            let path = e.path().strip_prefix("./").unwrap_or(e.path()).to_string_lossy().to_string();
+            if path.split('/').any(|c| matches!(c, ".git" | "target" | "node_modules")) {
+                continue;
+            }
+            if pl.is_empty() || path.to_lowercase().contains(&pl) {
+                out.push(path);
+            }
+            if out.len() >= 200 {
+                break;
+            }
+        }
+        out.sort_by_key(|s| s.len());
+        out.truncate(8);
+        out
     }
 }
 
@@ -331,9 +370,15 @@ async fn event_loop(
 }
 
 fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers, in_tx: &mpsc::UnboundedSender<String>) {
+    if app.show_shortcuts {
+        app.show_shortcuts = false; // any key dismisses the overlay
+        return;
+    }
     let has_palette = !app.palette_matches().is_empty();
+    let has_files = !app.input.starts_with('/') && app.file_token().is_some() && !app.file_matches().is_empty();
     match code {
         KeyCode::Char('c') | KeyCode::Char('q') if mods.contains(KeyModifiers::CONTROL) => app.quit = true,
+        KeyCode::Char('.') if mods.contains(KeyModifiers::CONTROL) => app.show_shortcuts = true,
         KeyCode::Char('n') if mods.contains(KeyModifiers::CONTROL) => {
             app.blocks.clear();
             app.streaming = None;
@@ -344,10 +389,12 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers, in_tx: &mpsc::Un
         KeyCode::Char(c) => {
             app.input.push(c);
             app.palette_sel = 0;
+            app.file_sel = 0;
         }
         KeyCode::Backspace => {
             app.input.pop();
             app.palette_sel = 0;
+            app.file_sel = 0;
         }
         KeyCode::Tab if has_palette => {
             let matches = app.palette_matches();
@@ -360,7 +407,17 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers, in_tx: &mpsc::Un
             let n = app.palette_matches().len();
             app.palette_sel = (app.palette_sel + 1).min(n.saturating_sub(1));
         }
+        KeyCode::Tab if has_files => complete_file(app),
+        KeyCode::Up if has_files => app.file_sel = app.file_sel.saturating_sub(1),
+        KeyCode::Down if has_files => {
+            let n = app.file_matches().len();
+            app.file_sel = (app.file_sel + 1).min(n.saturating_sub(1));
+        }
         KeyCode::Enter => {
+            if has_files {
+                complete_file(app);
+                return;
+            }
             // If the palette is open, the selected command becomes the line.
             let line = if has_palette {
                 let matches = app.palette_matches();
@@ -453,6 +510,22 @@ fn now_label() -> String {
     chrono::Local::now().format("%-I:%M %p").to_string()
 }
 
+/// Replace the trailing `@token` with the selected workspace file path.
+fn complete_file(app: &mut App) {
+    let files = app.file_matches();
+    if files.is_empty() {
+        return;
+    }
+    let sel = app.file_sel.min(files.len() - 1);
+    if let Some(at) = app.input.rfind('@') {
+        app.input.truncate(at);
+        app.input.push('@');
+        app.input.push_str(&files[sel]);
+        app.input.push(' ');
+    }
+    app.file_sel = 0;
+}
+
 // ---- rendering ----
 
 fn render(f: &mut ratatui::Frame, app: &App) {
@@ -481,9 +554,14 @@ fn render(f: &mut ratatui::Frame, app: &App) {
 
     if app.input.starts_with('/') && !app.palette_matches().is_empty() {
         render_palette(f, chunks[2], app);
+    } else if app.file_token().is_some() && !app.file_matches().is_empty() {
+        render_file_dropdown(f, chunks[2], app);
     }
     if app.modal.is_some() {
         render_modal(f, area, app);
+    }
+    if app.show_shortcuts {
+        render_shortcuts(f, area);
     }
 }
 
@@ -1015,6 +1093,74 @@ fn render_palette(f: &mut ratatui::Frame, transcript_area: Rect, app: &App) {
         .border_style(Style::default().fg(GRAY))
         .style(Style::default().bg(BG));
     f.render_widget(Paragraph::new(lines).block(block).style(Style::default().bg(BG)), area);
+}
+
+/// `@file` attach dropdown, drawn just above the input box.
+fn render_file_dropdown(f: &mut ratatui::Frame, transcript_area: Rect, app: &App) {
+    let files = app.file_matches();
+    let rows = (files.len() as u16).min(8);
+    let h = rows + 2;
+    let area = Rect {
+        x: transcript_area.x + 1,
+        y: transcript_area.y + transcript_area.height.saturating_sub(h),
+        width: transcript_area.width.saturating_sub(2),
+        height: h,
+    };
+    f.render_widget(Clear, area);
+    let mut lines = vec![];
+    for (i, path) in files.iter().enumerate() {
+        let sel = i == app.file_sel.min(files.len().saturating_sub(1));
+        let bg = if sel { USER_BG } else { BG };
+        let marker = if sel { "❯ " } else { "  " };
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {marker}"), Style::default().fg(BLUE).bg(bg)),
+            Span::styled("@".to_string(), Style::default().fg(DIM).bg(bg)),
+            Span::styled(path.clone(), Style::default().fg(if sel { WHITE } else { TXT }).bg(bg)),
+        ]));
+    }
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(GRAY))
+        .title(" attach file ")
+        .style(Style::default().bg(BG));
+    f.render_widget(Paragraph::new(lines).block(block).style(Style::default().bg(BG)), area);
+}
+
+/// Ctrl+. shortcuts overlay — keybindings + slash commands.
+fn render_shortcuts(f: &mut ratatui::Frame, area: Rect) {
+    let r = centered(60, 80, area);
+    f.render_widget(Clear, r);
+    let key = |k: &str, d: &str| -> Line<'static> {
+        Line::from(vec![
+            Span::styled(format!("  {k:<14}"), Style::default().fg(WHITE).bg(BG).add_modifier(Modifier::BOLD)),
+            Span::styled(d.to_string(), Style::default().fg(DIM).bg(BG)),
+        ])
+    };
+    let hdr = |t: &str| Line::from(Span::styled(format!("  {t}"), Style::default().fg(BLUE).bg(BG).add_modifier(Modifier::BOLD)));
+    let mut lines = vec![
+        hdr("Keys"),
+        key("Enter", "send message"),
+        key("Shift+Tab", "cycle permission mode"),
+        key("@", "attach a workspace file"),
+        key("/", "command palette"),
+        key("PgUp/PgDn", "scroll transcript"),
+        key("Ctrl+N", "new session"),
+        key("Ctrl+C / Ctrl+Q", "quit"),
+        key("Ctrl+.", "toggle this overlay"),
+        Line::from(""),
+        hdr("Commands"),
+    ];
+    for (n, d) in COMMANDS {
+        lines.push(key(n, d));
+    }
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(BLUE))
+        .title(" shortcuts ")
+        .style(Style::default().bg(BG));
+    f.render_widget(Paragraph::new(lines).block(block).style(Style::default().bg(BG)), r);
 }
 
 fn render_modal(f: &mut ratatui::Frame, area: Rect, app: &App) {
