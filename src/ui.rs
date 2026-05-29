@@ -49,6 +49,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/flush", "Save this session to memory"),
     ("/dream", "Consolidate stored memories"),
     ("/clear", "Start a new session"),
+    ("/status", "Show session status"),
     ("/inspect", "Show resolved configuration"),
     ("/quit", "Quit the application"),
 ];
@@ -82,10 +83,16 @@ struct App {
     quit: bool,
     responding: bool,
     title: String,
+    todos_total: usize,
+    todos_done: usize,
     cwd: String,
     model: String,
     mode: String,
 }
+
+/// Approx. tokens always resident in context (system prompt + tool schemas) — seeds the
+/// header counter so it reads like the real CLI instead of starting near zero.
+const BASE_CONTEXT_TOKENS: usize = 2600;
 
 impl App {
     fn new(cwd: String, model: String, mode: String) -> Self {
@@ -96,13 +103,15 @@ impl App {
             busy: false,
             spinner: 0,
             turn_start: None,
-            used_tokens: 0,
+            used_tokens: BASE_CONTEXT_TOKENS,
             scroll_from_bottom: 0,
             modal: None,
             palette_sel: 0,
             quit: false,
             responding: false,
             title: "mimo".to_string(),
+            todos_total: 0,
+            todos_done: 0,
             cwd,
             model,
             mode,
@@ -141,6 +150,8 @@ impl App {
             }
             UiEvent::Todos(items) => {
                 self.flush_stream();
+                self.todos_total = items.len();
+                self.todos_done = items.iter().filter(|(_, s)| s == "completed").count();
                 self.blocks.push(Blk::Todos(items));
             }
             UiEvent::Info(s) => {
@@ -463,7 +474,12 @@ fn render_header(f: &mut ratatui::Frame, area: Rect, app: &App) {
     } else {
         format!("{}", app.used_tokens)
     };
-    let right = format!("│ {used} / 512K ");
+    let todos = if app.todos_total > 0 {
+        format!("│ {}/{} ✓ ", app.todos_done, app.todos_total)
+    } else {
+        String::new()
+    };
+    let right = format!("│ {used} / 512K {todos}");
     let w = area.width as usize;
     let left = format!("  {}", short_path(&app.cwd));
     let pad = w.saturating_sub(left.chars().count() + right.chars().count());
@@ -887,6 +903,15 @@ fn handle_slash(agent: &mut Agent, line: &str, emitter: &Emitter) {
             }
         }
         "/inspect" => agent.cfg.print_inspect(),
+        "/status" => {
+            let cwd = std::env::current_dir().unwrap_or_default().display().to_string();
+            emitter.info(&format!("Version: mimo 0.2.11"));
+            emitter.info(&format!("Session ID: {}", agent.id));
+            emitter.info(&format!("Working directory: {cwd}"));
+            emitter.info(&format!("Model: {}", agent.cfg.model));
+            emitter.info(&format!("Backend: {}", agent.cfg.base_url));
+            emitter.info(&format!("Auth: {}", agent.cfg.auth_source));
+        }
         other => emitter.info(&format!("unknown command: {other}")),
     }
     emitter.status(&agent.cfg.model, &agent.cfg.mode_label());
