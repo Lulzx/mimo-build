@@ -1350,12 +1350,23 @@ fn render_modal(f: &mut ratatui::Frame, area: Rect, app: &App) {
                     t.push(Line::from(Span::styled(l.to_string(), Style::default().fg(TXT))));
                 }
             } else {
-                t.push(Line::from(Span::styled("Approve tool call?", Style::default().fg(WHITE).add_modifier(Modifier::BOLD))));
+                // Title by action, like the real permission view.
+                let action = match summary.split(' ').next().unwrap_or("") {
+                    "Run" => "Allow Execute?",
+                    "Edit" | "Write" => "Allow Edit?",
+                    _ => "Allow this action?",
+                };
+                t.push(Line::from(Span::styled(action.to_string(), Style::default().fg(WHITE).add_modifier(Modifier::BOLD))));
                 t.push(Line::from(Span::styled(summary.clone(), Style::default().fg(TXT))));
             }
             t.push(Line::from(""));
-            t.push(Line::from(Span::styled("[y] approve    [n] deny", Style::default().fg(ORANGE))));
-            (" approval ", t)
+            t.push(Line::from(vec![
+                Span::styled("[y] ", Style::default().fg(GREEN)),
+                Span::styled("Yes, allow    ", Style::default().fg(TXT)),
+                Span::styled("[n] ", Style::default().fg(RED)),
+                Span::styled("Deny", Style::default().fg(TXT)),
+            ]));
+            (" permission ", t)
         }
         Modal::Question { question, options, input, .. } => {
             let mut t = vec![Line::from(Span::styled(question.clone(), Style::default().fg(WHITE).add_modifier(Modifier::BOLD)))];
