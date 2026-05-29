@@ -448,8 +448,8 @@ fn render(f: &mut ratatui::Frame, app: &App) {
         .constraints([
             Constraint::Length(2), // header
             Constraint::Min(1),    // transcript
-            Constraint::Length(1), // working line
-            Constraint::Length(5), // input box (roomy, like the real CLI)
+            Constraint::Length(1), // working line / gap above box
+            Constraint::Length(3), // input box (3 rows: top, prompt, bottom — like the real CLI)
             Constraint::Length(1), // spacer between box and footer
             Constraint::Length(1), // footer
         ])
@@ -734,10 +734,16 @@ fn render_input(f: &mut ratatui::Frame, area: Rect, app: &App) {
             Span::styled(app.input.clone(), Style::default().fg(TXT)),
         ])
     };
-    // Blank line above the prompt vertically centers it within the 3-row interior.
-    let content = vec![Line::from(""), prompt_line];
-    f.render_widget(Paragraph::new(content).block(block).style(Style::default().bg(BG)), area);
-    f.set_cursor_position((area.x + 5 + app.input.chars().count() as u16, area.y + 2));
+    // Inset the box 2 columns each side (measured from the real CLI: box width = term-4).
+    let r = Rect {
+        x: area.x + 2,
+        y: area.y,
+        width: area.width.saturating_sub(4),
+        height: area.height,
+    };
+    f.render_widget(Paragraph::new(prompt_line).block(block).style(Style::default().bg(BG)), r);
+    // Single interior row; cursor at first text column: left border + " ❯ " (3 cells) = +4.
+    f.set_cursor_position((r.x + 4 + app.input.chars().count() as u16, r.y + 1));
 }
 
 fn render_footer(f: &mut ratatui::Frame, area: Rect, app: &App) {
