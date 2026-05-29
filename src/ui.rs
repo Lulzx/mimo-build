@@ -797,7 +797,7 @@ fn transcript_lines(app: &App, w: usize) -> Vec<Line<'static>> {
                 if !meta.is_empty() {
                     spans.push(Span::styled(format!(" ({meta})"), Style::default().fg(GRAY)));
                 }
-                out.push(Line::from(spans));
+                out.push(if selected { highlight_row(spans, w) } else { Line::from(spans) });
             }
             Blk::Thought { secs, text, expanded } => {
                 let bullet = if selected { "› " } else { "◆ " };
@@ -811,12 +811,13 @@ fn transcript_lines(app: &App, w: usize) -> Vec<Line<'static>> {
                 } else {
                     Style::default().fg(GRAY)
                 };
-                out.push(Line::from(vec![
+                let tspans = vec![
                     gutter,
                     Span::styled(bullet.to_string(), Style::default().fg(DIM)),
                     Span::styled("Thought ".to_string(), tstyle),
                     Span::styled(format!("for {secs:.1}s"), Style::default().fg(DIM)),
-                ]));
+                ];
+                out.push(if selected { highlight_row(tspans, w) } else { Line::from(tspans) });
                 if *expanded && !text.is_empty() {
                     out.push(Line::from(""));
                     for raw in wrap(text, w.saturating_sub(2)) {
@@ -842,7 +843,7 @@ fn transcript_lines(app: &App, w: usize) -> Vec<Line<'static>> {
                 out.push(Line::from(""));
             }
             Blk::Assistant { text, ts } => {
-                out.extend(render_assistant(text, ts, w));
+                out.extend(render_assistant(text, Some(ts), w));
             }
             Blk::Todos(items) => {
                 for (content, status) in items {
@@ -868,11 +869,23 @@ fn transcript_lines(app: &App, w: usize) -> Vec<Line<'static>> {
         }
     }
     if let Some(s) = &app.streaming {
-        for l in wrap(s, w) {
-            out.push(render_md_line(&l, indent));
-        }
+        // Live markdown rendering (tables box-draw as they complete), no timestamp yet.
+        out.extend(render_assistant(s, None, w));
     }
     out
+}
+
+/// Apply a full-width selection background to a row's spans (nav-selected items).
+fn highlight_row(spans: Vec<Span<'static>>, w: usize) -> Line<'static> {
+    let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    let mut s: Vec<Span> = spans
+        .into_iter()
+        .map(|sp| Span::styled(sp.content, sp.style.bg(USER_BG)))
+        .collect();
+    if used < w {
+        s.push(Span::styled(" ".repeat(w - used), Style::default().bg(USER_BG)));
+    }
+    Line::from(s)
 }
 
 fn diff_row(n: usize, marker: char, code: &str, color: Color) -> Line<'static> {
@@ -939,7 +952,7 @@ fn style_inline(s: &str) -> Vec<Span<'static>> {
 
 /// Render an assistant message: wrapped markdown, box-drawn tables, and a right-aligned
 /// timestamp on the first line (matching the real CLI).
-fn render_assistant(text: &str, ts: &str, w: usize) -> Vec<Line<'static>> {
+fn render_assistant(text: &str, ts: Option<&str>, w: usize) -> Vec<Line<'static>> {
     let indent = "    ";
     let lines: Vec<&str> = text.split('\n').collect();
     let mut out: Vec<Line> = vec![];
@@ -961,14 +974,18 @@ fn render_assistant(text: &str, ts: &str, w: usize) -> Vec<Line<'static>> {
         for piece in pieces {
             let mut ln = render_md_line(&piece, indent);
             if first {
-                ln = with_right_ts(ln, ts, w);
+                if let Some(ts) = ts {
+                    ln = with_right_ts(ln, ts, w);
+                }
                 first = false;
             }
             out.push(ln);
         }
         i += 1;
     }
-    out.push(Line::from(""));
+    if ts.is_some() {
+        out.push(Line::from(""));
+    }
     out
 }
 
