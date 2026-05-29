@@ -449,7 +449,8 @@ fn render(f: &mut ratatui::Frame, app: &App) {
             Constraint::Length(2), // header
             Constraint::Min(1),    // transcript
             Constraint::Length(1), // working line
-            Constraint::Length(3), // input box
+            Constraint::Length(5), // input box (roomy, like the real CLI)
+            Constraint::Length(1), // spacer between box and footer
             Constraint::Length(1), // footer
         ])
         .split(area);
@@ -458,7 +459,7 @@ fn render(f: &mut ratatui::Frame, app: &App) {
     render_transcript(f, chunks[1], app);
     render_working(f, chunks[2], app);
     render_input(f, chunks[3], app);
-    render_footer(f, chunks[4], app);
+    render_footer(f, chunks[5], app);
 
     if app.input.starts_with('/') && !app.palette_matches().is_empty() {
         render_palette(f, chunks[1], app);
@@ -722,7 +723,7 @@ fn render_input(f: &mut ratatui::Frame, area: Rect, app: &App) {
         .border_style(Style::default().fg(GRAY))
         .title_bottom(title)
         .style(Style::default().bg(BG));
-    let inner_line = if app.input.is_empty() {
+    let prompt_line = if app.input.is_empty() {
         Line::from(vec![
             Span::styled(" ❯ ", Style::default().fg(BLUE)),
             Span::styled("Build anything", Style::default().fg(GRAY)),
@@ -733,8 +734,10 @@ fn render_input(f: &mut ratatui::Frame, area: Rect, app: &App) {
             Span::styled(app.input.clone(), Style::default().fg(TXT)),
         ])
     };
-    f.render_widget(Paragraph::new(inner_line).block(block).style(Style::default().bg(BG)), area);
-    f.set_cursor_position((area.x + 5 + app.input.chars().count() as u16, area.y + 1));
+    // Blank line above the prompt vertically centers it within the 3-row interior.
+    let content = vec![Line::from(""), prompt_line];
+    f.render_widget(Paragraph::new(content).block(block).style(Style::default().bg(BG)), area);
+    f.set_cursor_position((area.x + 5 + app.input.chars().count() as u16, area.y + 2));
 }
 
 fn render_footer(f: &mut ratatui::Frame, area: Rect, app: &App) {
