@@ -960,12 +960,15 @@ fn render_assistant(text: &str, ts: Option<&str>, w: usize) -> Vec<Line<'static>
     let mut i = 0;
     while i < lines.len() {
         if is_table_row(lines[i]) && i + 1 < lines.len() && is_separator_row(lines[i + 1]) {
-            let mut block = vec![];
-            while i < lines.len() && is_table_row(lines[i]) {
-                block.push(lines[i]);
-                i += 1;
+            // Always include header + separator, then any following table rows.
+            let mut block = vec![lines[i], lines[i + 1]];
+            let mut j = i + 2;
+            while j < lines.len() && is_table_row(lines[j]) {
+                block.push(lines[j]);
+                j += 1;
             }
             out.extend(render_table(&block, indent));
+            i = j;
             first = false;
             continue;
         }
@@ -1007,7 +1010,8 @@ fn split_cells(l: &str) -> Vec<String> {
 /// Render a markdown table block as a box-drawn table.
 fn render_table(block: &[&str], indent: &str) -> Vec<Line<'static>> {
     let header = split_cells(block[0]);
-    let body: Vec<Vec<String>> = block[2..].iter().map(|r| split_cells(r)).collect();
+    // skip(2) is panic-safe even when only header+separator are present (mid-stream).
+    let body: Vec<Vec<String>> = block.iter().skip(2).map(|r| split_cells(r)).collect();
     let cols = header.len();
     let mut widths = vec![0usize; cols];
     for (i, c) in header.iter().enumerate() {
