@@ -11,7 +11,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap};
 use ratatui::Terminal;
 use std::io::Stdout;
 use std::time::{Duration, Instant};
@@ -56,9 +56,9 @@ const COMMANDS: &[(&str, &str)] = &[
 
 enum Blk {
     User { text: String, ts: String },
-    Tool { kind: String, summary: String },
+    Tool { kind: String, summary: String, active: bool },
     Diff { start: usize, old: String, new: String },
-    Assistant(String),
+    Assistant { text: String, ts: String },
     Todos(Vec<(String, String)>),
     Info(String),
     Error(String),
@@ -76,6 +76,7 @@ struct App {
     busy: bool,
     spinner: usize,
     turn_start: Option<Instant>,
+    last_event: Instant,
     used_tokens: usize,
     scroll_from_bottom: u16,
     modal: Option<Modal>,
@@ -103,6 +104,7 @@ impl App {
             busy: false,
             spinner: 0,
             turn_start: None,
+            last_event: Instant::now(),
             used_tokens: BASE_CONTEXT_TOKENS,
             scroll_from_bottom: 0,
             modal: None,
@@ -126,7 +128,7 @@ impl App {
         if let Some(s) = self.streaming.take() {
             let s = s.trim_end().to_string();
             if !s.is_empty() {
-                self.blocks.push(Blk::Assistant(s));
+                self.blocks.push(Blk::Assistant { text: s, ts: now_label() });
             }
         }
     }
@@ -136,13 +138,21 @@ impl App {
             UiEvent::AssistantDelta(d) => {
                 self.add_tokens(&d);
                 self.responding = true;
+                self.last_event = Instant::now();
                 self.streaming.get_or_insert_with(String::new).push_str(&d);
             }
             UiEvent::ToolStart(s) => {
                 self.flush_stream();
                 self.add_tokens(&s);
+                self.last_event = Instant::now();
+                // Only the newest tool is "active"; clear the marker on prior ones.
+                for b in self.blocks.iter_mut() {
+                    if let Blk::Tool { active, .. } = b {
+                        *active = false;
+                    }
+                }
                 let kind = s.split([' ', ':', '[']).next().unwrap_or("").to_string();
-                self.blocks.push(Blk::Tool { kind, summary: s });
+                self.blocks.push(Blk::Tool { kind, summary: s, active: true });
             }
             UiEvent::ToolDone => {}
             UiEvent::Diff { start_line, old, new } => {
@@ -503,6 +513,15 @@ fn render_transcript(f: &mut ratatui::Frame, area: Rect, app: &App) {
         Paragraph::new(lines).style(Style::default().bg(BG).fg(TXT)).scroll((scroll, 0)),
         area,
     );
+    // Scrollbar on overflow (the █ thumb the real CLI shows).
+    if total > view_h {
+        let mut sb = ScrollbarState::new(total as usize).position(scroll as usize);
+        f.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight).begin_symbol(None).end_symbol(None),
+            area,
+            &mut sb,
+        );
+    }
 }
 
 /// Build the transcript as styled, indented lines.
@@ -550,10 +569,12 @@ fn transcript_lines(app: &App, w: usize) -> Vec<Line<'static>> {
                 ]));
                 out.push(Line::from(""));
             }
-            Blk::Tool { kind, summary } => {
+            Blk::Tool { kind, summary, active } => {
                 let dcol = diamond_color(kind);
-                // colored gutter bar for active-ish tools (Run/Edit), blank otherwise
-                let gutter = if matches!(kind.as_str(), "Run" | "Edit" | "Write") {
+                // `❙` marks the currently-running item (left margin); colored bar for Run/Edit; else blank.
+                let gutter = if *active {
+                    Span::styled("  ❙ ".to_string(), Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
+                } else if matches!(kind.as_str(), "Run" | "Edit" | "Write") {
                     Span::styled("  │ ".to_string(), Style::default().fg(dcol))
                 } else {
                     Span::styled("    ".to_string(), Style::default().bg(BG))
@@ -589,11 +610,8 @@ fn transcript_lines(app: &App, w: usize) -> Vec<Line<'static>> {
                 }
                 out.push(Line::from(""));
             }
-            Blk::Assistant(t) => {
-                for l in wrap(t, w) {
-                    out.push(render_md_line(&l, indent));
-                }
-                out.push(Line::from(""));
+            Blk::Assistant { text, ts } => {
+                out.extend(render_assistant(text, ts, w));
             }
             Blk::Todos(items) => {
                 for (content, status) in items {
@@ -688,15 +706,129 @@ fn style_inline(s: &str) -> Vec<Span<'static>> {
     spans
 }
 
+/// Render an assistant message: wrapped markdown, box-drawn tables, and a right-aligned
+/// timestamp on the first line (matching the real CLI).
+fn render_assistant(text: &str, ts: &str, w: usize) -> Vec<Line<'static>> {
+    let indent = "    ";
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut out: Vec<Line> = vec![];
+    let mut first = true;
+    let mut i = 0;
+    while i < lines.len() {
+        if is_table_row(lines[i]) && i + 1 < lines.len() && is_separator_row(lines[i + 1]) {
+            let mut block = vec![];
+            while i < lines.len() && is_table_row(lines[i]) {
+                block.push(lines[i]);
+                i += 1;
+            }
+            out.extend(render_table(&block, indent));
+            first = false;
+            continue;
+        }
+        let raw = lines[i];
+        let pieces = if raw.is_empty() { vec![String::new()] } else { textwrap::wrap(raw, w.max(8)).iter().map(|s| s.to_string()).collect() };
+        for piece in pieces {
+            let mut ln = render_md_line(&piece, indent);
+            if first {
+                ln = with_right_ts(ln, ts, w);
+                first = false;
+            }
+            out.push(ln);
+        }
+        i += 1;
+    }
+    out.push(Line::from(""));
+    out
+}
+
+fn is_table_row(l: &str) -> bool {
+    let t = l.trim();
+    t.starts_with('|') && t.matches('|').count() >= 2
+}
+
+fn is_separator_row(l: &str) -> bool {
+    let t = l.trim();
+    !t.is_empty() && t.contains('-') && t.chars().all(|c| matches!(c, '|' | '-' | ':' | ' '))
+}
+
+fn split_cells(l: &str) -> Vec<String> {
+    let t = l.trim().trim_matches('|');
+    t.split('|').map(|c| c.trim().to_string()).collect()
+}
+
+/// Render a markdown table block as a box-drawn table.
+fn render_table(block: &[&str], indent: &str) -> Vec<Line<'static>> {
+    let header = split_cells(block[0]);
+    let body: Vec<Vec<String>> = block[2..].iter().map(|r| split_cells(r)).collect();
+    let cols = header.len();
+    let mut widths = vec![0usize; cols];
+    for (i, c) in header.iter().enumerate() {
+        widths[i] = widths[i].max(c.chars().count());
+    }
+    for row in &body {
+        for (i, c) in row.iter().enumerate() {
+            if i < cols {
+                widths[i] = widths[i].max(c.chars().count());
+            }
+        }
+    }
+    let border = Style::default().fg(GRAY).bg(BG);
+    let seg = |l: &str, m: &str, r: &str| -> Line<'static> {
+        let mut s = String::from(indent);
+        s.push_str(l);
+        for (i, wdt) in widths.iter().enumerate() {
+            if i > 0 {
+                s.push_str(m);
+            }
+            s.push_str(&"─".repeat(wdt + 2));
+        }
+        s.push_str(r);
+        Line::from(Span::styled(s, border))
+    };
+    let row_line = |cells: &[String], header_row: bool| -> Line<'static> {
+        let mut spans = vec![Span::styled(format!("{indent}│"), border)];
+        for (i, wdt) in widths.iter().enumerate() {
+            let cell = cells.get(i).map(|s| s.as_str()).unwrap_or("");
+            let pad = wdt - cell.chars().count();
+            let st = if header_row {
+                Style::default().fg(WHITE).bg(BG).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(TXT).bg(BG)
+            };
+            spans.push(Span::styled(format!(" {cell}{} ", " ".repeat(pad)), st));
+            spans.push(Span::styled("│".to_string(), border));
+        }
+        Line::from(spans)
+    };
+    let mut out = vec![seg("┌", "┬", "┐"), row_line(&header, true), seg("├", "┼", "┤")];
+    for row in &body {
+        out.push(row_line(row, false));
+    }
+    out.push(seg("└", "┴", "┘"));
+    out.push(Line::from(""));
+    out
+}
+
+/// Pad a rendered line to the right and append a dim timestamp.
+fn with_right_ts(line: Line<'static>, ts: &str, w: usize) -> Line<'static> {
+    let used: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+    let pad = w.saturating_sub(used + ts.chars().count() + 1);
+    let mut spans = line.spans;
+    spans.push(Span::styled(" ".repeat(pad), Style::default().bg(BG)));
+    spans.push(Span::styled(format!("{ts} "), Style::default().fg(DIM).bg(BG)));
+    Line::from(spans)
+}
+
 fn render_working(f: &mut ratatui::Frame, area: Rect, app: &App) {
     if !app.busy {
         f.render_widget(Block::default().style(Style::default().bg(BG)), area);
         return;
     }
-    let secs = app.turn_start.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0);
-    let phase = if app.responding { "Responding…" } else { "Thinking…" };
-    let left = format!("  {} {phase} {:.1}s", SPINNER[app.spinner], secs);
-    let right = format!("{}K [×] ", app.used_tokens / 1000);
+    let turn = app.turn_start.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0);
+    let local = app.last_event.elapsed().as_secs_f64();
+    let phase = if app.responding { "Responding…" } else { "Waiting…" };
+    let left = format!("  {} {phase} {:.1}s", SPINNER[app.spinner], local);
+    let right = format!("{:.0}s ⇣{:.1}k [✗] ", turn, app.used_tokens as f64 / 1000.0);
     let w = area.width as usize;
     let pad = w.saturating_sub(left.chars().count() + right.chars().count());
     f.render_widget(
