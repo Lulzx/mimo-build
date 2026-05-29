@@ -339,9 +339,15 @@ async fn event_loop(
 ) -> Result<()> {
     let mut last_title = String::new();
     loop {
-        // Dynamic window title with state, like the real CLI.
-        let want = if app.busy {
-            format!("{} — {} - mimo", if app.responding { "Responding" } else { "Thinking" }, app.title)
+        // Dynamic window title (mirrors the real TitleConfig: spinner · turn-timer ·
+        // action-required · session-name) — animates while a turn runs.
+        let want = if app.modal.is_some() {
+            format!("● action required — {} - mimo", app.title)
+        } else if app.busy {
+            let sp = SPINNER[spinner_frame(app)];
+            let turn = app.turn_start.map(|t| t.elapsed().as_secs()).unwrap_or(0);
+            let phase = if app.responding { "Responding" } else { "Working" };
+            format!("{sp} {phase} {turn}s — {} - mimo", app.title)
         } else {
             format!("{} - mimo", app.title)
         };
