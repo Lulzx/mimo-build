@@ -333,7 +333,14 @@ async fn event_loop(
 fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers, in_tx: &mpsc::UnboundedSender<String>) {
     let has_palette = !app.palette_matches().is_empty();
     match code {
-        KeyCode::Char('c') if mods.contains(KeyModifiers::CONTROL) => app.quit = true,
+        KeyCode::Char('c') | KeyCode::Char('q') if mods.contains(KeyModifiers::CONTROL) => app.quit = true,
+        KeyCode::Char('n') if mods.contains(KeyModifiers::CONTROL) => {
+            app.blocks.clear();
+            app.streaming = None;
+            app.todos_total = 0;
+            app.used_tokens = BASE_CONTEXT_TOKENS;
+            in_tx.send("/clear".to_string()).ok();
+        }
         KeyCode::Char(c) => {
             app.input.push(c);
             app.palette_sel = 0;
@@ -504,6 +511,11 @@ fn render_header(f: &mut ratatui::Frame, area: Rect, app: &App) {
 }
 
 fn render_transcript(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    // Empty state → the centered welcome view (logo + menu).
+    if app.blocks.is_empty() && app.streaming.is_none() {
+        render_welcome(f, area, app);
+        return;
+    }
     let inner_w = area.width.saturating_sub(4) as usize;
     let lines = transcript_lines(app, inner_w);
     let total = lines.len() as u16;
@@ -543,16 +555,6 @@ fn transcript_lines(app: &App, w: usize) -> Vec<Line<'static>> {
         v
     };
 
-    if app.blocks.is_empty() && app.streaming.is_none() {
-        // Minimal empty state with breathing room below the header.
-        out.push(Line::from(""));
-        out.push(Line::from(""));
-        out.push(Line::from(Span::styled(
-            format!("    {} · {} · type / for commands", app.model, app.mode),
-            Style::default().fg(DIM).bg(BG),
-        )));
-        return out;
-    }
 
     for blk in &app.blocks {
         match blk {
@@ -819,9 +821,70 @@ fn with_right_ts(line: Line<'static>, ts: &str, w: usize) -> Line<'static> {
     Line::from(spans)
 }
 
+/// Centered welcome view: an original Mimo emblem + wordmark + a keybind menu, vertically
+/// centered in the transcript area (same structure as the real CLI's welcome screen).
+fn render_welcome(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    let w = area.width as usize;
+    let center = |s: &str, style: Style| -> Line<'static> {
+        let pad = w.saturating_sub(s.chars().count()) / 2;
+        Line::from(vec![
+            Span::styled(" ".repeat(pad), Style::default().bg(BG)),
+            Span::styled(s.to_string(), style),
+        ])
+    };
+    // Original abstract braille emblem (not affiliated with any other tool's logo).
+    let emblem = ["⢀⣠⣤⣄⡀", "⢸⣿⠛⣿⡇", "⠈⠻⣿⠟⠁"];
+    let menu = [("New session", "Ctrl+N"), ("Resume last session", "Ctrl+R"), ("Quit", "Ctrl+Q")];
+    const MW: usize = 44;
+    let lmargin = w.saturating_sub(MW) / 2;
+
+    let mut lines: Vec<Line> = vec![];
+    for e in emblem {
+        lines.push(center(e, Style::default().fg(BLUE).bg(BG)));
+    }
+    lines.push(Line::from(""));
+    lines.push(center("mimo", Style::default().fg(WHITE).bg(BG).add_modifier(Modifier::BOLD)));
+    lines.push(center(&format!("{} · {}", app.model, app.mode), Style::default().fg(DIM).bg(BG)));
+    lines.push(Line::from(""));
+    lines.push(Line::from(""));
+    for (i, (label, key)) in menu.iter().enumerate() {
+        if i > 0 {
+            lines.push(Line::from(vec![
+                Span::styled(" ".repeat(lmargin), Style::default().bg(BG)),
+                Span::styled("─".repeat(MW), Style::default().fg(Color::Rgb(40, 40, 40)).bg(BG)),
+            ]));
+        }
+        let gap = MW.saturating_sub(label.chars().count() + key.chars().count());
+        lines.push(Line::from(vec![
+            Span::styled(" ".repeat(lmargin), Style::default().bg(BG)),
+            Span::styled(label.to_string(), Style::default().fg(TXT).bg(BG)),
+            Span::styled(" ".repeat(gap), Style::default().bg(BG)),
+            Span::styled(key.to_string(), Style::default().fg(DIM).bg(BG)),
+        ]));
+    }
+
+    // Vertically center.
+    let top = (area.height as usize).saturating_sub(lines.len()) / 2;
+    let mut all: Vec<Line> = vec![Line::from(""); top];
+    all.extend(lines);
+    f.render_widget(Paragraph::new(all).style(Style::default().bg(BG)), area);
+}
+
 fn render_working(f: &mut ratatui::Frame, area: Rect, app: &App) {
     if !app.busy {
-        f.render_widget(Block::default().style(Style::default().bg(BG)), area);
+        // On the welcome screen, this row carries the tip (just above the input box).
+        if app.blocks.is_empty() && app.streaming.is_none() {
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    "  Tip: Enter to send · Shift+Tab cycles mode · type / for commands",
+                    Style::default().fg(DIM).bg(BG),
+                )))
+                .style(Style::default().bg(BG)),
+                area,
+            );
+        } else {
+            f.render_widget(Block::default().style(Style::default().bg(BG)), area);
+        }
         return;
     }
     let turn = app.turn_start.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0);
@@ -888,6 +951,20 @@ fn render_input(f: &mut ratatui::Frame, area: Rect, app: &App) {
 }
 
 fn render_footer(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    // Welcome screen shows the version (right-aligned) instead of keybind hints.
+    if app.blocks.is_empty() && app.streaming.is_none() && !app.busy && !app.input.starts_with('/') {
+        let v = "mimo 0.2.11 [stable] ";
+        let pad = (area.width as usize).saturating_sub(v.chars().count());
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(" ".repeat(pad), Style::default().bg(BG)),
+                Span::styled(v.to_string(), Style::default().fg(DIM).bg(BG)),
+            ]))
+            .style(Style::default().bg(BG)),
+            area,
+        );
+        return;
+    }
     let pairs: &[(&str, &str)] = if app.input.starts_with('/') {
         &[("Enter", "run"), ("Tab", "complete"), ("↑↓", "select"), ("Ctrl+.", "shortcuts")]
     } else if app.busy {
