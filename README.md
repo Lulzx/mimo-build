@@ -107,13 +107,30 @@ for the inline line-REPL instead.
 - **System prompt** (`src/prompt.rs`) reconstructed from the original's templated fragments.
 - **Config/auth** (`src/config.rs`) reading `~/.mimo/config.toml` and `~/.mimo/auth.json`.
 
+## Advanced features
+
+- **Best-of-N** (`src/bestofn.rs`) — `mimo --best-of-n <N> -p "…"` spawns N candidates in isolated
+  **git worktrees**, runs an LLM judge (correctness → quality → safety), and applies the winner.
+- **Cross-session memory** (`src/memory.rs`) — `memory_search`/`memory_get` tools, `/flush` to distil
+  a session into `~/.mimo/memory/`, `/dream` to consolidate; the index is recalled at session start.
+- **Goal state machine** (`src/goal.rs`) — `update_goal` tool + `/goal`; Active/Blocked/Paused/Complete,
+  3-blocks-before-pause, and an **LLM completion classifier** that must confirm `completed:true`.
+- **Schedulers + monitor** (`src/scheduler.rs`) — `scheduler_create/delete/list` (persisted; no live
+  daemon) and `monitor` (bounded live stdout streaming).
+- **Toolset personalities** (`src/personalities.rs`) — `--persona codex|cursor|opencode` swaps the
+  system prompt to emulate other harnesses' styles.
+- **ACP server** (`src/acp.rs`) — `mimo acp` speaks Agent Client Protocol JSON-RPC over stdio
+  (initialize / session.new / session.prompt with streaming `agent_message_chunk`) for editor integration.
+- **OS sandbox** (`src/sandbox.rs`) — `--sandbox read-only|workspace-write` confines shell commands via
+  macOS `sandbox-exec` (real kernel-level enforcement; no-op with a warning off-macOS).
+- **Image/video** (`src/image.rs`) — `image_gen`/`image_edit`/`video_gen` against an OpenAI-style
+  images endpoint, degrading gracefully when the backend doesn't support it.
+
 ## Still out of scope (vs. the 106 MB original)
 
-Worktree isolation + best-of-n candidate judging, cross-session memory (`/flush`/`/dream`), the
-goal state machine + LLM completion classifier, schedulers (`scheduler_*`/`monitor`), the ACP editor
-protocol, OS sandboxing, telemetry/OTEL, auto-update, the plugin marketplace, image/video tools
-(`image_gen`/`video_gen`), and the alternate toolset personalities (Codex/Cursor/OpenCode).
-[`../re/FINDINGS.md`](../re/FINDINGS.md) specifies each.
+Telemetry/OTEL (**deliberately omitted** — a clone shouldn't phone home), auto-update, the full plugin
+marketplace, notebook tools, and a native `/v1/responses` client (we speak Chat Completions, which the
+proxy, `api.x.ai`, and MiMo all accept). [`../re/FINDINGS.md`](../re/FINDINGS.md) specifies each.
 
 ## Layout
 

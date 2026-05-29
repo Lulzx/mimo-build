@@ -27,8 +27,21 @@ pub async fn run(cfg: Config, resume: Option<Resume>) -> Result<()> {
                 rl.add_history_entry(&line).ok();
 
                 if line.starts_with('/') {
-                    if handle_slash(&line, &mut agent) {
-                        break;
+                    // Async memory commands handled here; the rest in handle_slash.
+                    match line.as_str() {
+                        "/flush" => {
+                            let s = agent.flush_memory().await;
+                            println!("\x1b[2m{s}\x1b[0m");
+                        }
+                        "/dream" => {
+                            let s = agent.dream_memory().await;
+                            println!("\x1b[2m{s}\x1b[0m");
+                        }
+                        _ => {
+                            if handle_slash(&line, &mut agent) {
+                                break;
+                            }
+                        }
                     }
                     continue;
                 }
@@ -90,6 +103,16 @@ fn handle_slash(line: &str, agent: &mut Agent) -> bool {
             );
         }
         "/inspect" => agent.cfg.print_inspect(),
+        "/goal" => {
+            if arg.is_empty() {
+                println!("{}", crate::goal::status());
+            } else if arg == "clear" {
+                crate::goal::clear();
+                println!("\x1b[2m(goal cleared)\x1b[0m");
+            } else {
+                println!("{}", crate::goal::set_goal(arg));
+            }
+        }
         other => println!("unknown command: {other} (try /help)"),
     }
     false

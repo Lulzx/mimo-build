@@ -4,14 +4,22 @@
 // same ~/.mimo layout, same OpenAI-compatible streaming agent loop, the same core
 // tool set, plan mode + approval gating, and an interactive TUI. See ../re/FINDINGS.md.
 
+mod acp;
 mod agent;
 mod api;
 mod auth;
+mod bestofn;
 mod bgtask;
 mod config;
 mod event;
+mod goal;
+mod image;
 mod mcp;
+mod memory;
+mod personalities;
 mod prompt;
+mod sandbox;
+mod scheduler;
 mod session;
 mod subagent;
 mod tools;
@@ -83,6 +91,18 @@ struct Cli {
     #[arg(short = 'p', long = "single")]
     single: Option<String>,
 
+    /// Run best-of-N: spawn N isolated git worktrees, generate N candidates, judge, apply the best (headless)
+    #[arg(long = "best-of-n")]
+    best_of_n: Option<usize>,
+
+    /// Toolset personality: mimo (default), codex, cursor, opencode
+    #[arg(long)]
+    persona: Option<String>,
+
+    /// Sandbox profile for shell commands (none, read-only, workspace-write)
+    #[arg(long, env = "MIMO_SANDBOX")]
+    sandbox: Option<String>,
+
     /// Extra rules to append to the system prompt
     #[arg(long)]
     rules: Option<String>,
@@ -131,6 +151,8 @@ enum Command {
     Logout,
     /// Print version information
     Version,
+    /// Run as an ACP server over stdio (editor integration)
+    Acp,
 }
 
 #[tokio::main]
@@ -158,6 +180,28 @@ async fn main() -> anyhow::Result<()> {
     cfg.system_prompt_override = cli.system_prompt_override.clone();
     cfg.subagents = !cli.no_subagents;
     cfg.agent_override = cli.agent.clone();
+
+    // Toolset personality → system prompt override.
+    if let Some(name) = &cli.persona {
+        match personalities::get(name) {
+            Some(p) => cfg.system_prompt_override = Some(p.system_prompt),
+            None if name == "mimo" => {}
+            None => eprintln!("unknown --persona '{name}' (choices: {:?}); using default", personalities::list()),
+        }
+    }
+
+    // Sandbox profile → process-global env the stateless command tool reads.
+    if let Some(profile) = &cli.sandbox {
+        if !sandbox::profiles().contains(&profile.as_str()) {
+            eprintln!("unknown --sandbox '{profile}' (choices: {:?}); running unsandboxed", sandbox::profiles());
+        } else {
+            if !sandbox::is_supported() && profile != "none" {
+                eprintln!("note: --sandbox '{profile}' is only enforced on macOS; running unsandboxed");
+            }
+            cfg.sandbox = Some(profile.clone());
+            std::env::set_var("MIMO_SANDBOX", profile);
+        }
+    }
     if let Some(t) = &cli.tools {
         cfg.allowed_tools = Some(t.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect());
     }
@@ -191,6 +235,9 @@ async fn main() -> anyhow::Result<()> {
             }
             return Ok(());
         }
+        Some(Command::Acp) => {
+            return acp::serve_stdio(&cfg).await;
+        }
         None => {}
     }
 
@@ -205,6 +252,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Single-turn (headless) vs interactive TUI.
     if let Some(prompt_text) = cli.single {
+        // Best-of-N: generate N isolated candidates in git worktrees and apply the winner.
+        if let Some(n) = cli.best_of_n {
+            return bestofn::run(&cfg, &prompt_text, n).await;
+        }
         let mut agent = agent::Agent::new(cfg);
         if let Some(r) = &resume {
             session::apply(&mut agent, r);

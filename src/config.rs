@@ -30,6 +30,7 @@ pub struct Config {
     pub allowed_tools: Option<Vec<String>>,
     pub disallowed_tools: Vec<String>,
     pub agent_override: Option<String>,
+    pub sandbox: Option<String>,
 }
 
 const XAI_PUBLIC_BASE: &str = "https://api.x.ai/v1";
@@ -83,6 +84,7 @@ impl Config {
             allowed_tools: None,
             disallowed_tools: vec![],
             agent_override: None,
+            sandbox: None,
         })
     }
 

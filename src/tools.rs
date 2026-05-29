@@ -111,6 +111,14 @@ pub fn assemble(cfg: &Config, agents: &[AgentDef], mcp_defs: Vec<ToolDef>) -> Ve
         ));
     }
 
+    // Feature modules.
+    defs.extend(crate::memory::tool_defs());
+    defs.extend(crate::goal::tool_defs());
+    defs.extend(crate::scheduler::tool_defs());
+    if cfg.web_search {
+        defs.extend(crate::image::tool_defs());
+    }
+
     defs.extend(mcp_defs);
 
     defs.retain(|d| {
@@ -335,7 +343,15 @@ fn search_replace(args: &Value) -> Result<String> {
 
 fn run_terminal_command(args: &Value) -> Result<String> {
     let cmd = args["command"].as_str().ok_or_else(|| anyhow!("missing command"))?;
-    let out = Command::new("bash").arg("-c").arg(cmd).output()?;
+    // Apply the active sandbox profile (set once at startup from --sandbox / MIMO_SANDBOX).
+    let out = match std::env::var("MIMO_SANDBOX").ok().filter(|p| p != "none" && !p.is_empty()) {
+        Some(profile) => {
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let argv = crate::sandbox::wrap(cmd, &profile, &cwd);
+            Command::new(&argv[0]).args(&argv[1..]).output()?
+        }
+        None => Command::new("bash").arg("-c").arg(cmd).output()?,
+    };
     let mut s = String::new();
     s.push_str(&String::from_utf8_lossy(&out.stdout));
     let err = String::from_utf8_lossy(&out.stderr);

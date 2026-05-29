@@ -206,11 +206,22 @@ pub async fn run(cfg: Config, resume: Option<Resume>) -> Result<()> {
         }
         agent_emitter.status(&agent.cfg.model, agent.cfg.plan_mode);
         while let Some(line) = in_rx.recv().await {
-            if line.starts_with('/') {
-                handle_slash(&mut agent, &line, &agent_emitter);
-            } else {
-                let _ = agent.run_turn(&line).await;
-                session::save(&agent);
+            match line.as_str() {
+                "/flush" => {
+                    let s = agent.flush_memory().await;
+                    agent_emitter.info(&s);
+                }
+                "/dream" => {
+                    let s = agent.dream_memory().await;
+                    agent_emitter.info(&s);
+                }
+                _ if line.starts_with('/') => {
+                    handle_slash(&mut agent, &line, &agent_emitter);
+                }
+                _ => {
+                    let _ = agent.run_turn(&line).await;
+                    session::save(&agent);
+                }
             }
             ev_tx.send(UiEvent::TurnDone).ok();
         }
@@ -492,6 +503,17 @@ fn handle_slash(agent: &mut Agent, line: &str, emitter: &Emitter) {
             agent.cfg.always_approve = !agent.cfg.always_approve;
             emitter.info(&format!("(auto-approve {})", if agent.cfg.always_approve { "ON" } else { "OFF" }));
         }
+        "/goal" => {
+            if arg.is_empty() {
+                emitter.info(&crate::goal::status());
+            } else if arg == "clear" {
+                crate::goal::clear();
+                emitter.info("(goal cleared)");
+            } else {
+                emitter.info(&crate::goal::set_goal(arg));
+            }
+        }
+        "/inspect" => agent.cfg.print_inspect(),
         other => emitter.info(&format!("unknown command: {other}")),
     }
     emitter.status(&agent.cfg.model, agent.cfg.plan_mode);

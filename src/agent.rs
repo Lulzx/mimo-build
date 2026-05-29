@@ -68,6 +68,9 @@ impl Agent {
             emitter.info(&format!("loaded project instructions ({} files)", pi.matches("<project_instructions").count()));
             messages.push(Message::user(pi));
         }
+        if let Some(mem) = crate::memory::recall_context() {
+            messages.push(Message::user(mem));
+        }
         Agent {
             cfg,
             messages,
@@ -95,6 +98,22 @@ impl Agent {
             mcp: McpManager::default(),
             plan: vec![],
             tasks: Default::default(),
+        }
+    }
+
+    /// /flush — distil this conversation into a durable memory file.
+    pub async fn flush_memory(&self) -> String {
+        match crate::memory::flush(&self.cfg, &self.emitter, &self.messages).await {
+            Ok(s) => s,
+            Err(e) => format!("flush failed: {e}"),
+        }
+    }
+
+    /// /dream — consolidate/prune the memory store.
+    pub async fn dream_memory(&self) -> String {
+        match crate::memory::dream(&self.cfg, &self.emitter).await {
+            Ok(s) => s,
+            Err(e) => format!("dream failed: {e}"),
         }
     }
 
@@ -251,6 +270,29 @@ impl Agent {
             }
             "web_fetch" => web_fetch(args).await,
             "web_search" => "web_search is not wired to a search backend in this build.".to_string(),
+            "update_goal" => {
+                let mut result = crate::goal::dispatch(name, args).unwrap_or_default();
+                // A `completed:true` only sticks if the LLM classifier confirms (mirrors the original).
+                if args["completed"].as_bool().unwrap_or(false) {
+                    if crate::goal::classify_completion(&self.cfg, &self.emitter, &self.messages).await {
+                        result.push_str("\nClassifier confirmed: goal complete.");
+                    } else {
+                        result.push_str("\nClassifier did NOT confirm completion; keep working.");
+                    }
+                }
+                result
+            }
+            "image_gen" | "image_edit" | "video_gen" => {
+                crate::image::dispatch(name, args, &self.cfg).await.unwrap_or_else(|| format!("error: {name}"))
+            }
+            "scheduler_create" | "scheduler_delete" | "scheduler_list" | "monitor" => {
+                crate::scheduler::dispatch(name, args, &self.emitter)
+                    .await
+                    .unwrap_or_else(|| format!("error: {name}"))
+            }
+            "memory_search" | "memory_get" => {
+                crate::memory::dispatch(name, args).unwrap_or_else(|| format!("error: {name}"))
+            }
             _ if self.mcp.owns(name) => match self.mcp.call(name, args) {
                 Ok(r) => r,
                 Err(e) => format!("error: {e}"),
