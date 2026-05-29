@@ -826,7 +826,16 @@ fn render_working(f: &mut ratatui::Frame, area: Rect, app: &App) {
     }
     let turn = app.turn_start.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0);
     let local = app.last_event.elapsed().as_secs_f64();
-    let phase = if app.responding { "Responding…" } else { "Waiting…" };
+    // Phases mirror the real CLI's turn_status: Streaming while text flows, Working once a
+    // tool has run, Waiting before the first activity.
+    let had_activity = app.blocks.iter().any(|b| matches!(b, Blk::Tool { .. }));
+    let phase = if app.responding {
+        "Streaming…"
+    } else if had_activity {
+        "Working…"
+    } else {
+        "Waiting…"
+    };
     let left = format!("  {} {phase} {:.1}s", SPINNER[app.spinner], local);
     let right = format!("{:.0}s ⇣{:.1}k [✗] ", turn, app.used_tokens as f64 / 1000.0);
     let w = area.width as usize;
