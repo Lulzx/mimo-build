@@ -456,23 +456,24 @@ fn render(f: &mut ratatui::Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2), // header
+            Constraint::Length(1), // top margin (blank row above header, like the real CLI)
+            Constraint::Length(1), // header
             Constraint::Min(1),    // transcript
             Constraint::Length(1), // working line / gap above box
-            Constraint::Length(3), // input box (3 rows: top, prompt, bottom — like the real CLI)
+            Constraint::Length(3), // input box (3 rows: top, prompt, bottom)
             Constraint::Length(1), // spacer between box and footer
             Constraint::Length(1), // footer
         ])
         .split(area);
 
-    render_header(f, chunks[0], app);
-    render_transcript(f, chunks[1], app);
-    render_working(f, chunks[2], app);
-    render_input(f, chunks[3], app);
-    render_footer(f, chunks[5], app);
+    render_header(f, chunks[1], app);
+    render_transcript(f, chunks[2], app);
+    render_working(f, chunks[3], app);
+    render_input(f, chunks[4], app);
+    render_footer(f, chunks[6], app);
 
     if app.input.starts_with('/') && !app.palette_matches().is_empty() {
-        render_palette(f, chunks[1], app);
+        render_palette(f, chunks[2], app);
     }
     if app.modal.is_some() {
         render_modal(f, area, app);
@@ -543,14 +544,13 @@ fn transcript_lines(app: &App, w: usize) -> Vec<Line<'static>> {
     };
 
     if app.blocks.is_empty() && app.streaming.is_none() {
-        for l in [
-            "",
-            "  ▌ Mimo Build",
-            &format!("  {} · {} · {}", app.model, app.mode, "type / for commands"),
-            "  Tip: Enter to send · Shift+Tab cycles mode · Ctrl+C to quit.",
-        ] {
-            out.push(Line::from(Span::styled(l.to_string(), Style::default().fg(DIM).bg(BG))));
-        }
+        // Minimal empty state with breathing room below the header.
+        out.push(Line::from(""));
+        out.push(Line::from(""));
+        out.push(Line::from(Span::styled(
+            format!("    {} · {} · type / for commands", app.model, app.mode),
+            Style::default().fg(DIM).bg(BG),
+        )));
         return out;
     }
 
