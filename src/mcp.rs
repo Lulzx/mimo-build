@@ -107,6 +107,11 @@ impl McpManager {
         defs
     }
 
+    /// `(server name, tool count)` for each running server — for the `/mcp` command.
+    pub fn summary(&self) -> Vec<(String, usize)> {
+        self.servers.iter().map(|s| (s.name.clone(), s.tools.len())).collect()
+    }
+
     pub fn owns(&self, tool_name: &str) -> bool {
         tool_name.contains("__")
             && self.servers.iter().any(|s| tool_name.starts_with(&format!("{}__", s.name)))

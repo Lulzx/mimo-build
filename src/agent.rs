@@ -194,16 +194,20 @@ impl Agent {
                 }
 
                 // Per-call approval for mutating tools (skipped when always-approve).
-                if tools::is_mutating(&name)
-                    && !self.cfg.always_approve
-                    && !self.emitter.request_approval(&summary, None).await
-                {
-                    self.emitter.info("denied");
-                    self.messages.push(Message::tool(
-                        &call.id,
-                        "The user denied this tool execution. Refer to their next message for guidance.",
-                    ));
-                    continue;
+                if tools::is_mutating(&name) && !self.cfg.always_approve {
+                    if let crate::event::Decision::Reject(feedback) =
+                        self.emitter.request_approval(&summary, None).await
+                    {
+                        self.emitter.info("rejected");
+                        let msg = match feedback {
+                            Some(f) if !f.is_empty() => format!(
+                                "The user rejected this tool execution with feedback: {f}"
+                            ),
+                            _ => "The user rejected this tool execution. Refer to their next message for guidance.".to_string(),
+                        };
+                        self.messages.push(Message::tool(&call.id, &msg));
+                        continue;
+                    }
                 }
 
                 if name != "todo_write" {
@@ -217,11 +221,21 @@ impl Agent {
                         args["new_string"].as_str(),
                         args["file_path"].as_str(),
                     ) {
-                        let start = std::fs::read_to_string(path)
-                            .ok()
+                        let content = std::fs::read_to_string(path).ok();
+                        let start = content
+                            .as_ref()
                             .and_then(|c| c.find(new).map(|b| c[..b].matches('\n').count() + 1))
                             .unwrap_or(0);
-                        self.emitter.diff(start, old, new);
+                        // Up to 3 unchanged lines before the change, as context (grok-style).
+                        let context: Vec<String> = match (&content, start) {
+                            (Some(c), s) if s > 1 => {
+                                let lines: Vec<&str> = c.lines().collect();
+                                let from = (s - 1).saturating_sub(3);
+                                lines[from..s - 1].iter().map(|l| l.to_string()).collect()
+                            }
+                            _ => vec![],
+                        };
+                        self.emitter.diff(start, &context, old, new);
                     }
                 }
                 self.emitter.tool_meta(&tool_meta(&name, &args, &result));
@@ -342,17 +356,73 @@ impl Agent {
             self.approve_plan();
             return "Plan auto-approved. Proceed with execution.".to_string();
         }
-        if self.emitter.request_approval("approve plan", Some(plan)).await {
-            self.approve_plan();
-            "The user approved the plan. Plan mode is now off — proceed with execution.".to_string()
-        } else {
-            "The user did not approve the plan. Continue planning and ask what they would like to change.".to_string()
+        match self.emitter.request_approval("approve plan", Some(plan)).await {
+            crate::event::Decision::Allow => {
+                self.approve_plan();
+                "The user approved the plan. Plan mode is now off — proceed with execution.".to_string()
+            }
+            crate::event::Decision::Reject(feedback) => match feedback {
+                Some(f) if !f.is_empty() => format!(
+                    "The user did not approve the plan. Their feedback: {f}. Revise the plan accordingly."
+                ),
+                _ => "The user did not approve the plan. Continue planning and ask what they would like to change.".to_string(),
+            },
         }
     }
 
     pub fn approve_plan(&mut self) {
         self.plan_approved = true;
         self.cfg.plan_mode = false;
+    }
+
+    /// Running MCP servers as `(name, tool count)`, for the `/mcp` command.
+    pub fn mcp_summary(&self) -> Vec<(String, usize)> {
+        self.mcp.summary()
+    }
+
+    /// Conservatively compact history: keep the leading system/bootstrap block and the most
+    /// recent `keep_tail` messages, replacing the middle with a single marker. The tail start
+    /// is advanced past any `tool` message so a tool reply is never orphaned from its call.
+    /// Returns the number of messages dropped (0 if nothing was compacted).
+    pub fn compact(&mut self, keep_tail: usize) -> usize {
+        let n = self.messages.len();
+        let head = self
+            .messages
+            .iter()
+            .take_while(|m| m.role == "system" || m.role == "user")
+            .count()
+            .min(2);
+        if n <= head + keep_tail + 1 {
+            return 0;
+        }
+        let mut start = n - keep_tail;
+        while start < n && self.messages[start].role == "tool" {
+            start += 1;
+        }
+        let mut compacted: Vec<Message> = self.messages[..head].to_vec();
+        compacted.push(Message::user("[Earlier conversation compacted to save context.]"));
+        compacted.extend_from_slice(&self.messages[start..]);
+        let dropped = n - compacted.len();
+        self.messages = compacted;
+        dropped
+    }
+
+    /// Called when a turn is cancelled mid-flight (Ctrl+C). Keeps the message history valid by
+    /// giving any dangling tool_calls from the last assistant message a synthetic response.
+    pub fn note_cancelled(&mut self) {
+        if let Some(ai) = self.messages.iter().rposition(|m| m.role == "assistant") {
+            if let Some(calls) = self.messages[ai].tool_calls.clone() {
+                let answered: std::collections::HashSet<String> = self.messages[ai + 1..]
+                    .iter()
+                    .filter_map(|m| m.tool_call_id.clone())
+                    .collect();
+                for c in calls {
+                    if !answered.contains(&c.id) {
+                        self.messages.push(Message::tool(&c.id, "[Tool call cancelled by the user.]"));
+                    }
+                }
+            }
+        }
     }
 
     pub fn reset(&mut self) {

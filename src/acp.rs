@@ -102,7 +102,7 @@ pub async fn serve_stdio(cfg: &Config) -> Result<()> {
                                     let note = session_update_chunk(&session_id, &text);
                                     write_msg(&mut stdout, &note).await?;
                                 }
-                                Some(UiEvent::TurnDone) | None => done = true,
+                                Some(UiEvent::TurnDone { .. }) | None => done = true,
                                 Some(_) => {}
                             }
                         }

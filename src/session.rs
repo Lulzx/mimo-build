@@ -95,6 +95,37 @@ fn all_sorted() -> Vec<Stored> {
     sessions
 }
 
+/// Recent sessions as `(id, model, relative-age, first-user-line)`, newest first.
+/// Used by the TUI `/sessions` palette command.
+pub fn list_recent(limit: usize) -> Vec<(String, String, String, String)> {
+    let now = now();
+    all_sorted()
+        .into_iter()
+        .take(limit)
+        .map(|s| {
+            let age = ago(now.saturating_sub(s.updated));
+            let title = s
+                .messages
+                .iter()
+                .find(|m| m.role == "user" && m.content.as_deref().map(|c| !c.starts_with("<")).unwrap_or(false))
+                .and_then(|m| m.content.clone())
+                .map(|c| c.lines().next().unwrap_or("").chars().take(48).collect::<String>())
+                .unwrap_or_default();
+            (s.id, s.model, age, title)
+        })
+        .collect()
+}
+
+/// Coarse "5m"/"3h"/"2d" relative-age label.
+fn ago(secs: u64) -> String {
+    match secs {
+        0..=59 => format!("{secs}s"),
+        60..=3599 => format!("{}m", secs / 60),
+        3600..=86399 => format!("{}h", secs / 3600),
+        _ => format!("{}d", secs / 86400),
+    }
+}
+
 /// Resolve a resume target into (id, messages).
 pub fn resolve(target: &Resume) -> Option<(String, Vec<Message>)> {
     let stored = match target {

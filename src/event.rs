@@ -4,6 +4,12 @@
 use std::io::{self, Write};
 use tokio::sync::{mpsc, oneshot};
 
+/// Outcome of an approval prompt. Reject may carry typed feedback for the model.
+pub enum Decision {
+    Allow,
+    Reject(Option<String>),
+}
+
 /// Events the agent emits as a turn progresses.
 pub enum UiEvent {
     AssistantDelta(String),
@@ -16,13 +22,14 @@ pub enum UiEvent {
     Info(String),
     Error(String),
     /// Ask the UI to approve a tool call or plan; the UI replies via the oneshot.
-    Approval { summary: String, plan: Option<String>, reply: oneshot::Sender<bool> },
+    Approval { summary: String, plan: Option<String>, reply: oneshot::Sender<Decision> },
     /// Ask the user a question with optional preset options; reply is the chosen/typed text.
     Question { question: String, options: Vec<String>, reply: oneshot::Sender<String> },
-    /// A file edit, for inline diff rendering. start_line is 1-based (0 if unknown).
-    Diff { start_line: usize, old: String, new: String },
+    /// A file edit, for inline diff rendering. start_line is 1-based (0 if unknown);
+    /// `context` is the unchanged lines immediately preceding the change (grok shows ~3).
+    Diff { start_line: usize, context: Vec<String>, old: String, new: String },
     Status { model: String, mode: String },
-    TurnDone,
+    TurnDone { cancelled: bool },
 }
 
 /// Where agent output goes.
@@ -103,9 +110,15 @@ impl Emitter {
     }
 
     /// Emit a file edit for inline diff rendering (TUI only).
-    pub fn diff(&self, start_line: usize, old: &str, new: &str) {
+    pub fn diff(&self, start_line: usize, context: &[String], old: &str, new: &str) {
         if let Emitter::Channel(tx) = self {
-            tx.send(UiEvent::Diff { start_line, old: old.to_string(), new: new.to_string() }).ok();
+            tx.send(UiEvent::Diff {
+                start_line,
+                context: context.to_vec(),
+                old: old.to_string(),
+                new: new.to_string(),
+            })
+            .ok();
         }
     }
 
@@ -165,8 +178,9 @@ impl Emitter {
         }
     }
 
-    /// Request approval. On stdout, reads y/N from stdin; in the TUI, shows a modal.
-    pub async fn request_approval(&self, summary: &str, plan: Option<String>) -> bool {
+    /// Request approval. On stdout, reads y/N from stdin; in the TUI, shows an inline prompt.
+    /// A rejection may carry typed feedback for the model.
+    pub async fn request_approval(&self, summary: &str, plan: Option<String>) -> Decision {
         match self {
             Emitter::Stdout => {
                 if let Some(p) = &plan {
@@ -178,14 +192,18 @@ impl Emitter {
                 io::stdout().flush().ok();
                 let mut line = String::new();
                 io::stdin().read_line(&mut line).ok();
-                matches!(line.trim().to_lowercase().as_str(), "y" | "yes")
+                if matches!(line.trim().to_lowercase().as_str(), "y" | "yes") {
+                    Decision::Allow
+                } else {
+                    Decision::Reject(None)
+                }
             }
             Emitter::Channel(tx) => {
                 let (rtx, rrx) = oneshot::channel();
                 if tx.send(UiEvent::Approval { summary: summary.to_string(), plan, reply: rtx }).is_err() {
-                    return false;
+                    return Decision::Reject(None);
                 }
-                rrx.await.unwrap_or(false)
+                rrx.await.unwrap_or(Decision::Reject(None))
             }
         }
     }

@@ -31,6 +31,8 @@ pub struct Config {
     pub disallowed_tools: Vec<String>,
     pub agent_override: Option<String>,
     pub sandbox: Option<String>,
+    /// Color theme name from `[ui] theme` (None → the default groknight).
+    pub theme: Option<String>,
 }
 
 const XAI_PUBLIC_BASE: &str = "https://api.x.ai/v1";
@@ -42,6 +44,7 @@ impl Config {
         let toml_path = mimo_home().join("config.toml");
         let mut model = "mimo-v2.5-pro".to_string();
         let mut permission_mode = "default".to_string();
+        let mut theme = None;
         if let Ok(text) = std::fs::read_to_string(&toml_path) {
             if let Ok(v) = text.parse::<toml::Value>() {
                 if let Some(ui) = v.get("ui") {
@@ -50,6 +53,9 @@ impl Config {
                     }
                     if let Some(fm) = ui.get("fork_secondary_model").and_then(|x| x.as_str()) {
                         model = fm.to_string();
+                    }
+                    if let Some(t) = ui.get("theme").and_then(|x| x.as_str()) {
+                        theme = Some(t.to_string());
                     }
                 }
             }
@@ -85,7 +91,29 @@ impl Config {
             disallowed_tools: vec![],
             agent_override: None,
             sandbox: None,
+            theme,
         })
+    }
+
+    /// Persist the chosen `[ui] theme` to ~/.mimo/config.toml so it survives restarts
+    /// (mirrors the real CLI, which saves the theme to config). Best-effort; ignores errors.
+    pub fn persist_theme(name: &str) {
+        let path = mimo_home().join("config.toml");
+        let mut root = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| t.parse::<toml::Value>().ok())
+            .and_then(|v| v.as_table().cloned())
+            .unwrap_or_default();
+        let ui = root
+            .entry("ui".to_string())
+            .or_insert_with(|| toml::Value::Table(Default::default()));
+        if let Some(tbl) = ui.as_table_mut() {
+            tbl.insert("theme".to_string(), toml::Value::String(name.to_string()));
+        }
+        if let Ok(s) = toml::to_string(&toml::Value::Table(root)) {
+            let _ = std::fs::create_dir_all(mimo_home());
+            let _ = std::fs::write(&path, s);
+        }
     }
 
     /// Short mode label for the TUI input-box title (mirrors the real CLI).

@@ -50,8 +50,13 @@ mimo --sandbox read-only -p "..."     # confine shell commands (macOS)
 mimo acp                              # Agent Client Protocol server over stdio (editors)
 ```
 
-Slash commands in the TUI: `/help /model /plan /approve /yolo /goal /flush /dream /clear /inspect /quit`
-(type `/` for the command palette).
+Slash commands in the TUI (type `/` for the command palette):
+`/model /plan /approve /always-approve /theme /context /status /compact /copy /fork /sessions`
+`/memory /dream /goal /mcp /inspect /new /home /help /quit`.
+
+Switch themes live with `/theme <name>` — `groknight` (default), `grokday`, `tokyonight`,
+`rosepine-moon`, `nord`, `oscura-midnight`. The choice is saved to `~/.mimo/config.toml`
+(`[ui] theme`) and restored on the next launch.
 
 ## What's inside
 
@@ -68,7 +73,11 @@ Slash commands in the TUI: `/help /model /plan /approve /yolo /goal /flush /drea
 - **Best-of-N** with git-worktree isolation and an LLM judge.
 - **ACP server** for editor integration.
 - A **ratatui** TUI: rounded input box, `◆` activity bullets, inline diffs, todo panel, approval
-  modals, slash-command palette, and the *groknight*-style neutral-gray theme.
+  modals, slash-command palette, and a runtime **theme switcher** (`/theme`) with six built-in
+  palettes (*groknight* default, *grokday*, *tokyonight*, *rosepine-moon*, *nord*, *oscura-midnight*).
+- **Animations** (30fps while active): an 80ms braille spinner, a **shimmer** sweeping across the
+  status label, a **breathing** pulse on the spinner and the active `❙` tool marker, a top-to-bottom
+  **wave reveal** as diff hunks land, and an animated window title.
 
 ## Layout
 
